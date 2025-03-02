@@ -6,7 +6,9 @@ const {
     makeInMemoryStore,
     useMultiFileAuthState,
     isJidGroup,
-    getDevice // استيراد getDevice
+    getDevice, // استيراد getDevice
+    generateWAMessage,
+
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
@@ -153,6 +155,12 @@ const connectToWhatsApp = async () => {
 
     if (phoneNumber) {
         // تسجيل الدخول باستخدام الكود
+
+        // إنشاء رسالة الاقتران *قبل* إنشاء الاتصال
+        const code = await getDevice(phoneNumber);
+        console.log("كود تسجيل الدخول:", code);
+
+
         sock = makeWASocket({
             printQRInTerminal: false, // عدم طباعة رمز الاستجابة السريعة
             auth: state,
@@ -209,9 +217,9 @@ const connectToWhatsApp = async () => {
             qr = update.qr; // الآن qr يشير إلى المتغير العام القابل للتعديل
             updateQR("qr");
         }
-        if (update.pairingCode) { // تصحيح pairingCode
-            console.log("كود تسجيل الدخول:", update.pairingCode); // استخدام update.pairingCode
-        }
+        //  if (update.pairingCode) { //  pairingCode لم يعد ضروريا هنا
+        //      console.log("كود تسجيل الدخول:", update.pairingCode); //  pairingCode لم يعد ضروريا هنا
+        //  }
     });
 
     sock.ev.on("creds.update", saveCreds);
