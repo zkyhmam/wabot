@@ -54,7 +54,7 @@ const formatDuration = (isoDuration) => {
  * Search for videos using YouTube API
  * @param {string} query - Search query
  * @param {number} maxResults - Maximum number of results to return
- * @returns {Promise<Array>} Array of video details
+ * @returns {Promise} Array of video details
  */
 const searchYouTube = async (query, maxResults = 5) => {
     try {
@@ -126,7 +126,7 @@ const convertIsoDurationToSeconds = (isoDuration) => {
  * Download thumbnail from URL
  * @param {string} url - Thumbnail URL
  * @param {string} filePath - Where to save the thumbnail
- * @returns {Promise<boolean>} Success status
+ * @returns {Promise} Success status
  */
 const downloadThumbnail = async (url, filePath) => {
     return new Promise((resolve, reject) => {
@@ -159,7 +159,7 @@ const downloadThumbnail = async (url, filePath) => {
  * @param {string} videoPath - Path to video file
  * @param {string} thumbnailPath - Path to thumbnail image
  * @param {string} outputPath - Path to save the new video with thumbnail
- * @returns {Promise<boolean>} Success status
+ * @returns {Promise} Success status
  */
 const addThumbnailToVideo = async (videoPath, thumbnailPath, outputPath) => {
     return new Promise((resolve, reject) => {
@@ -251,7 +251,6 @@ const downloadSong = async (sock, chatId, message, query) => {
         stream.on('data', (chunk) => {
             downloadedBytes += chunk.length;
             
-            // Update progress every 2 seconds to avoid too many messages
             const now = Date.now();
             if (now - lastProgressUpdate > 2000 && totalBytes > 0) {
                 lastProgressUpdate = now;
@@ -364,7 +363,6 @@ const downloadVideo = async (sock, chatId, message, query) => {
         const channelName = video.author?.name || "قناة غير معروفة";
         const viewCount = video.views ? new Intl.NumberFormat('ar-EG').format(video.views) : "غير معروف";
 
-        // Check if video is too long (10 minutes max)
         if (video.duration.seconds > 600) { 
             await sock.sendMessage(chatId, {
                 text: `*⚠️ الفيديو ده طويل جدًا (${videoDuration}) ⏱️*\n*ممكن تجرب فيديو أقصر من 10 دقايق 🙏*`,
@@ -388,13 +386,11 @@ const downloadVideo = async (sock, chatId, message, query) => {
             edit: statusMsg.key
         });
 
-        // Download thumbnail
         try {
             await downloadThumbnail(video.thumbnail, thumbnailPath);
             console.log(`[Video Downloader] Thumbnail downloaded: ${thumbnailPath}`);
         } catch (thumbnailError) {
             console.error("[Video Downloader] Thumbnail download error:", thumbnailError);
-            // Continue without thumbnail if there's an error
         }
 
         const stream = ytdl(video.url, {
@@ -405,7 +401,6 @@ const downloadVideo = async (sock, chatId, message, query) => {
         const writeStream = fs.createWriteStream(filePath);
         stream.pipe(writeStream);
         
-        // Progress tracking
         let downloadedBytes = 0;
         let totalBytes = 0;
         let lastProgressUpdate = Date.now();
@@ -417,7 +412,6 @@ const downloadVideo = async (sock, chatId, message, query) => {
         stream.on('data', (chunk) => {
             downloadedBytes += chunk.length;
             
-            // Update progress every 3 seconds to avoid too many messages
             const now = Date.now();
             if (now - lastProgressUpdate > 3000 && totalBytes > 0) {
                 lastProgressUpdate = now;
@@ -438,7 +432,6 @@ const downloadVideo = async (sock, chatId, message, query) => {
             try {
                 let videoToSend = filePath;
                 
-                // Add thumbnail as cover if download was successful
                 if (fs.existsSync(thumbnailPath)) {
                     try {
                         await addThumbnailToVideo(filePath, thumbnailPath, finalVideoPath);
@@ -446,7 +439,6 @@ const downloadVideo = async (sock, chatId, message, query) => {
                         videoToSend = finalVideoPath;
                     } catch (ffmpegError) {
                         console.error("[Video Downloader] ffmpeg error:", ffmpegError);
-                        // Continue with original video if ffmpeg fails
                     }
                 }
 
@@ -470,7 +462,6 @@ const downloadVideo = async (sock, chatId, message, query) => {
                     { quoted: message }
                 );
 
-                // Clean up files
                 [filePath, thumbnailPath, finalVideoPath].forEach(file => {
                     if (fs.existsSync(file)) {
                         fs.unlink(file, (err) => {
@@ -492,7 +483,6 @@ const downloadVideo = async (sock, chatId, message, query) => {
                     edit: statusMsg.key
                 });
 
-                // Clean up files
                 [filePath, thumbnailPath, finalVideoPath].forEach(file => {
                     if (fs.existsSync(file)) {
                         fs.unlinkSync(file);
@@ -508,7 +498,6 @@ const downloadVideo = async (sock, chatId, message, query) => {
                 edit: statusMsg.key
             });
 
-            // Clean up files
             [filePath, thumbnailPath].forEach(file => {
                 if (fs.existsSync(file)) {
                     fs.unlinkSync(file);
@@ -526,7 +515,7 @@ const downloadVideo = async (sock, chatId, message, query) => {
 };
 
 /**
- * Search YouTube and return results as separate messages with thumbnails
+ * Search YouTube and return results as separate messages with thumbnails and interactive buttons
  * @param {object} sock - WebSocket connection
  * @param {string} chatId - Chat ID
  * @param {object} message - Original message object
@@ -559,14 +548,11 @@ const searchAndDisplay = async (sock, chatId, message, query, maxResults = 3) =>
             edit: statusMsg.key
         });
 
-        // Send each result as a separate message with thumbnail
         for (const video of searchResults) {
-            // Format numbers in Arabic
             const viewsFormatted = new Intl.NumberFormat('ar-EG').format(video.views);
             const likesFormatted = new Intl.NumberFormat('ar-EG').format(video.likes);
             const commentsFormatted = new Intl.NumberFormat('ar-EG').format(video.comments);
             
-            // Format caption with all details
             const caption = `*🎬 ${video.title}*\n\n` +
                             `*📺 القناة:* ${video.author.name}\n` +
                             `*⏱️ المدة:* ${video.duration.timestamp}\n` +
@@ -578,37 +564,47 @@ const searchAndDisplay = async (sock, chatId, message, query, maxResults = 3) =>
                             `*🎵 لتحميل صوت فقط:* \`.song ${video.title}\``;
             
             try {
-                // Download thumbnail temporarily
                 const thumbnailId = Date.now() + Math.floor(Math.random() * 1000);
                 const tempThumbPath = path.join(thumbnailsFolder, `temp_thumb_${thumbnailId}.jpg`);
                 await downloadThumbnail(video.thumbnail, tempThumbPath);
                 
-                // Send message with thumbnail
+                const buttons = [
+                    {
+                        buttonId: `download_video_${video.id}`,
+                        buttonText: { displayText: 'تنزيل الفيديو - Zaky AI 📹' },
+                        type: 1
+                    },
+                    {
+                        buttonId: `download_song_${video.id}`,
+                        buttonText: { displayText: 'تنزيل الصوت - Zaky AI 🎵' },
+                        type: 1
+                    }
+                ];
+                
                 await sock.sendMessage(
                     chatId,
                     {
                         image: fs.readFileSync(tempThumbPath),
-                        caption: caption
+                        caption: caption,
+                        footer: 'Zaky AI 🤖',
+                        buttons: buttons,
+                        headerType: 4
                     },
                     { quoted: message }
                 );
                 
-                // Clean up thumbnail
                 fs.unlink(tempThumbPath, (err) => {
                     if (err) console.error(`[YouTube Search] Error deleting temp thumbnail: ${err}`);
                 });
                 
-                // Small delay between messages to ensure order
                 await new Promise(resolve => setTimeout(resolve, 500));
                 
             } catch (imgError) {
-                console.error("[YouTube Search] Error with thumbnail:", imgError);
-                // Send as text if thumbnail fails
+                console.error("[YouTube Search] Error with thumbnail or buttons:", imgError);
                 await sock.sendMessage(chatId, { text: caption }, { quoted: message });
             }
         }
 
-        // Send summary message
         await sock.sendMessage(chatId, {
             text: `*لتحميل فيديو: \`.video ${query}\`*\n*لتحميل أغنية: \`.song ${query}\`*\n\n*لمزيد من نتائج البحث اكتب:* \`.yts ${query} more\``
         });
