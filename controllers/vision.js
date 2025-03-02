@@ -16,16 +16,15 @@ let vision;
 try {
     vision = google.vision({
         version: 'v1',
-        auth: process.env.GOOGLE_VISION_API_KEY || 'AIzaSyDGXCFF6aIa6NVXYwtnQ4aZSjtMNR8KLC0' // Always better to use environment variables
+        auth: process.env.GOOGLE_VISION_API_KEY || 'AIzaSyDGXCFF6aIa6NVXYwtnQ4aZSjtMNR8KLC0'
     });
 } catch (error) {
     console.error('[Image Processor] Failed to initialize Google Vision API:', error);
-    // Continue execution, we'll handle this during actual API calls
 }
 
 // Cache management
-const processedImages = new Set(); // Keep track of processed image paths
-const processingQueue = new Map(); // Track images currently being processed
+const processedImages = new Set();
+const processingQueue = new Map();
 let cacheCleanupInterval;
 
 /**
@@ -33,7 +32,6 @@ let cacheCleanupInterval;
  */
 const initialize = async () => {
     try {
-        // Ensure temp directory exists
         try {
             await fs.mkdir(TEMP_DIR, { recursive: true });
             console.log(`[Image Processor] Temporary directory created at: ${TEMP_DIR}`);
@@ -42,14 +40,13 @@ const initialize = async () => {
             throw new Error('Failed to initialize temporary directory');
         }
 
-        // Set up cache cleanup interval
         cacheCleanupInterval = setInterval(() => {
             try {
                 cleanupCache();
             } catch (error) {
                 console.error('[Image Processor] Error during cache cleanup:', error);
             }
-        }, 3600000); // Clean up cache every hour
+        }, 3600000);
 
         return true;
     } catch (error) {
@@ -64,13 +61,11 @@ const initialize = async () => {
 const cleanupCache = async () => {
     console.log('[Image Processor] Performing cache cleanup');
     
-    // Clear processed images older than 1 hour
     if (processedImages.size > 1000) {
         processedImages.clear();
         console.log('[Image Processor] Cleared processed images cache due to size');
     }
     
-    // Delete old temporary files
     try {
         const files = await fs.readdir(TEMP_DIR);
         const currentTime = Date.now();
@@ -81,7 +76,6 @@ const cleanupCache = async () => {
                 const stats = await fs.stat(filePath);
                 const fileAge = currentTime - stats.mtimeMs;
                 
-                // Delete files older than 2 hours
                 if (fileAge > 7200000) {
                     await fs.unlink(filePath);
                     console.log(`[Image Processor] Deleted old temporary file: ${filePath}`);
@@ -104,20 +98,17 @@ const cleanupCache = async () => {
  * @param {Number} retryCount - Current retry attempt count
  */
 const processImage = async (sock, chatId, imagePath, quotedMessage, retryCount = 0) => {
-    // Check if already being processed to prevent duplicate processing
     const imageKey = `${chatId}:${path.basename(imagePath)}`;
     if (processingQueue.has(imageKey)) {
         console.log(`[Image Processor] Image already being processed: ${imagePath}`);
         return;
     }
     
-    // Check if already processed to prevent duplicate analysis
     if (processedImages.has(imagePath)) {
         console.log(`[Image Processor] Image already processed: ${imagePath}`);
         return;
     }
     
-    // Mark as being processed
     processingQueue.set(imageKey, Date.now());
     processedImages.add(imagePath);
     
@@ -125,63 +116,25 @@ const processImage = async (sock, chatId, imagePath, quotedMessage, retryCount =
     let imageBuffer;
     
     try {
-        // Send initial status message
-        try {
-            statusMsg = await sock.sendMessage(chatId, {
-                text: "*جاري تحليل الصورة... 🤖🔍*",
-            }, { quoted: quotedMessage });
-        } catch (msgError) {
-            console.error('[Image Processor] Failed to send status message:', msgError);
-            // Continue processing even if status message fails
-        }
+        statusMsg = await sock.sendMessage(chatId, {
+            text: "*جاري تحليل الصورة... 🤖🔍*",
+        }, { quoted: quotedMessage });
         
-        // Validate image file exists
-        try {
-            await fs.access(imagePath);
-        } catch (accessError) {
-            throw new Error(`Image file not accessible: ${accessError.message}`);
-        }
+        await fs.access(imagePath);
+        imageBuffer = await fs.readFile(imagePath);
         
-        // Read image file
-        try {
-            imageBuffer = await fs.readFile(imagePath);
-        } catch (readError) {
-            throw new Error(`Failed to read image file: ${readError.message}`);
-        }
-        
-        // Validate image size
         if (imageBuffer.length > MAX_IMAGE_SIZE) {
             throw new Error('Image exceeds maximum size limit of 10MB');
         }
         
-        // Validate image format (basic check)
-        const magicNumbers = {
-            jpeg: [0xFF, 0xD8, 0xFF],
-            png: [0x89, 0x50, 0x4E, 0x47],
-            gif: [0x47, 0x49, 0x46, 0x38]
-        };
-        
-        let validFormat = false;
-        for (const [format, numbers] of Object.entries(magicNumbers)) {
-            if (numbers.every((val, i) => imageBuffer[i] === val)) {
-                validFormat = true;
-                break;
-            }
-        }
-        
-        if (!validFormat) {
-            throw new Error('Unsupported image format. Please use JPEG, PNG, or GIF.');
-        }
-        
-        // Convert image to base64
+        // تحويل الصورة إلى base64 والتحقق من حجمها
         const imageBase64 = imageBuffer.toString('base64');
-        
-        // Prepare API request with error handling
-        if (!vision) {
-            throw new Error('Google Vision API not initialized properly');
+        const base64Size = Buffer.byteLength(imageBase64);
+        if (base64Size > MAX_IMAGE_SIZE) {
+            throw new Error(`Encoded image exceeds maximum size limit of 10MB (size: ${(base64Size / 1024 / 1024).toFixed(2)}MB)`);
         }
         
-        // Configure request
+        // إعداد الطلب إلى API
         const request = {
             image: {
                 content: imageBase64,
@@ -195,184 +148,119 @@ const processImage = async (sock, chatId, imagePath, quotedMessage, retryCount =
             ],
         };
         
-        // Set up timeout promise
-        const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(() => reject(new Error('API request timed out')), API_TIMEOUT);
-        });
-        
-        // Make API request with timeout
+        // إرسال الطلب مع تحديد مهلة زمنية
         const [result] = await Promise.race([
             vision.images.annotate({ request: request }),
-            timeoutPromise
+            new Promise((_, reject) => setTimeout(() => reject(new Error('API request timed out')), API_TIMEOUT))
         ]);
-        
-        // Safety check for API response
-        if (!result || !result.responses || !result.responses[0]) {
-            throw new Error('Invalid API response structure');
-        }
         
         const response = result.responses[0];
         
-        // Extract data with error handling for each feature
-        let labels, texts, safeSearch, webEntities, imageProperties;
+        // استخراج البيانات مع معالجة الأخطاء
+        const labels = response.labelAnnotations || [];
+        const texts = response.textAnnotations || [];
+        const safeSearch = response.safeSearchAnnotation || {};
+        const webEntities = response.webDetection?.webEntities || [];
+        const imageProperties = response.imagePropertiesAnnotation || {};
         
-        try {
-            labels = response.labelAnnotations || [];
-        } catch (error) {
-            console.warn('[Image Processor] Error extracting labels:', error);
-            labels = [];
-        }
-        
-        try {
-            texts = response.textAnnotations || [];
-        } catch (error) {
-            console.warn('[Image Processor] Error extracting texts:', error);
-            texts = [];
-        }
-        
-        try {
-            safeSearch = response.safeSearchAnnotation || {};
-        } catch (error) {
-            console.warn('[Image Processor] Error extracting safe search data:', error);
-            safeSearch = {};
-        }
-        
-        try {
-            webEntities = response.webDetection?.webEntities || [];
-        } catch (error) {
-            console.warn('[Image Processor] Error extracting web entities:', error);
-            webEntities = [];
-        }
-        
-        try {
-            imageProperties = response.imagePropertiesAnnotation || {};
-        } catch (error) {
-            console.warn('[Image Processor] Error extracting image properties:', error);
-            imageProperties = {};
-        }
-        
-        // Build analysis text
+        // بناء نص التحليل
         let analysisText = "*🤖 تحليل الصورة:*\n\n";
         
-        if (labels && labels.length > 0) {
+        if (labels.length > 0) {
             analysisText += "✅ *العناصر الموجودة:* \n";
-            try {
-                labels.forEach(label => {
-                    if (label && label.description) {
-                        const confidence = label.score ? (label.score * 100).toFixed(2) : "غير معروف";
-                        analysisText += `• ${label.description} (الثقة: ${confidence}%)\n`;
-                    }
-                });
-            } catch (error) {
-                console.warn('[Image Processor] Error formatting labels:', error);
-                analysisText += "• حدث خطأ في معالجة البيانات\n";
-            }
+            labels.forEach(label => {
+                const confidence = label.score ? (label.score * 100).toFixed(2) : "غير معروف";
+                analysisText += `• ${label.description} (الثقة: ${confidence}%)\n`;
+            });
             analysisText += "\n";
         }
         
-        if (texts && texts.length > 0) {
+        if (texts.length > 0) {
             analysisText += "📝 *النص الموجود في الصورة:*\n";
-            try {
-                if (texts[0] && texts[0].description) {
-                    analysisText += `"${texts[0].description}"\n\n`;
-                } else {
-                    analysisText += "• لم يتم العثور على نص واضح\n\n";
-                }
-            } catch (error) {
-                console.warn('[Image Processor] Error formatting text:', error);
-                analysisText += "• حدث خطأ في معالجة النص\n\n";
+            if (texts[0].description) {
+                analysisText += `"${texts[0].description}"\n\n`;
+            } else {
+                analysisText += "• لم يتم العثور على نص واضح\n\n";
             }
         }
         
-        if (imageProperties?.dominantColors?.colors) {
+        if (imageProperties.dominantColors?.colors) {
             analysisText += "🎨 *الألوان الرئيسية:*\n";
-            try {
-                const colors = imageProperties.dominantColors.colors;
-                colors.slice(0, 3).forEach(color => {
-                    const rgb = color.color || { red: 0, green: 0, blue: 0 };
-                    const fraction = color.pixelFraction ? (color.pixelFraction * 100).toFixed(2) : "0.00";
-                    analysisText += `• R:${rgb.red || 0}, G:${rgb.green || 0}, B:${rgb.blue || 0} (النسبة: ${fraction}%)\n`;
-                });
-            } catch (error) {
-                console.warn('[Image Processor] Error formatting colors:', error);
-                analysisText += "• حدث خطأ في معالجة بيانات الألوان\n";
-            }
+            const colors = imageProperties.dominantColors.colors.slice(0, 3);
+            colors.forEach(color => {
+                const rgb = color.color || { red: 0, green: 0, blue: 0 };
+                const fraction = color.pixelFraction ? (color.pixelFraction * 100).toFixed(2) : "0.00";
+                analysisText += `• R:${rgb.red}, G:${rgb.green}, B:${rgb.blue} (النسبة: ${fraction}%)\n`;
+            });
             analysisText += "\n";
         }
         
-        if (webEntities && webEntities.length > 0) {
+        if (webEntities.length > 0) {
             analysisText += "🌐 *نتائج الويب ذات الصلة:* \n";
-            try {
-                webEntities.forEach(entity => {
-                    if (entity && entity.description) {
-                        analysisText += `• ${entity.description}\n`;
-                    }
-                });
-            } catch (error) {
-                console.warn('[Image Processor] Error formatting web entities:', error);
-                analysisText += "• حدث خطأ في معالجة بيانات الويب\n";
-            }
+            webEntities.forEach(entity => {
+                if (entity.description) {
+                    analysisText += `• ${entity.description}\n`;
+                }
+            });
             analysisText += "\n";
         }
         
         if (safeSearch) {
             analysisText += "⚠️ *فحص المحتوى:* \n";
-            try {
-                analysisText += `• محتوى للبالغين: ${safeSearch.adult || 'غير معروف'}\n`;
-                analysisText += `• محتوى ساخر: ${safeSearch.spoof || 'غير معروف'}\n`;
-                analysisText += `• محتوى طبي: ${safeSearch.medical || 'غير معروف'}\n`;
-                analysisText += `• محتوى عنيف: ${safeSearch.violence || 'غير معروف'}\n`;
-                analysisText += `• محتوى إباحي: ${safeSearch.racy || 'غير معروف'}\n\n`;
-            } catch (error) {
-                console.warn('[Image Processor] Error formatting safe search data:', error);
-                analysisText += "• حدث خطأ في معالجة بيانات الأمان\n\n";
-            }
+            analysisText += `• محتوى للبالغين: ${safeSearch.adult || 'غير معروف'}\n`;
+            analysisText += `• محتوى ساخر: ${safeSearch.spoof || 'غير معروف'}\n`;
+            analysisText += `• محتوى طبي: ${safeSearch.medical || 'غير معروف'}\n`;
+            analysisText += `• محتوى عنيف: ${safeSearch.violence || 'غير معروف'}\n`;
+            analysisText += `• محتوى إباحي: ${safeSearch.racy || 'غير معروف'}\n\n`;
         }
         
         analysisText += "*شكراً لاستخدامك Zaky AI لتحليل الصور! 🤖*";
         
-        // Send analysis message
-        try {
-            if (statusMsg && statusMsg.key) {
-                await sock.sendMessage(chatId, { text: analysisText }, { quoted: quotedMessage, edit: statusMsg.key });
-            } else {
-                await sock.sendMessage(chatId, { text: analysisText }, { quoted: quotedMessage });
-            }
-            console.log(`[Image Processor] Successfully analyzed and sent results for: ${imagePath}`);
-        } catch (sendError) {
-            console.error('[Image Processor] Failed to send analysis message:', sendError);
-            throw new Error(`Failed to send analysis message: ${sendError.message}`);
+        // إرسال نص التحليل
+        if (statusMsg && statusMsg.key) {
+            await sock.sendMessage(chatId, { text: analysisText }, { quoted: quotedMessage, edit: statusMsg.key });
+        } else {
+            await sock.sendMessage(chatId, { text: analysisText }, { quoted: quotedMessage });
         }
+        console.log(`[Image Processor] Successfully analyzed and sent results for: ${imagePath}`);
         
     } catch (error) {
         console.error(`[Image Processor] Error analyzing image (attempt ${retryCount + 1}/${MAX_RETRY_ATTEMPTS}):`, error);
         
-        // Retry logic
-        if (retryCount < MAX_RETRY_ATTEMPTS - 1) {
+        // إعادة المحاولة في حالة أخطاء محددة
+        if (retryCount < MAX_RETRY_ATTEMPTS - 1 && (error.message.includes('timeout') || error.response?.status === 500)) {
             console.log(`[Image Processor] Retrying image analysis (${retryCount + 1}/${MAX_RETRY_ATTEMPTS})...`);
             processingQueue.delete(imageKey);
             return processImage(sock, chatId, imagePath, quotedMessage, retryCount + 1);
         }
         
-        // Send error message on final failure
-        try {
-            const errorMessage = "*❌ فشل تحليل الصورة.*\n" +
-                                 `*السبب:* ${error.message || 'خطأ غير معروف'}\n` +
-                                 "*حاول مرة أخرى أو تأكد من صحة الصورة المرسلة.*";
-            
-            if (statusMsg && statusMsg.key) {
-                await sock.sendMessage(chatId, { text: errorMessage }, { quoted: quotedMessage, edit: statusMsg.key });
-            } else {
-                await sock.sendMessage(chatId, { text: errorMessage }, { quoted: quotedMessage });
-            }
-        } catch (sendError) {
-            console.error('[Image Processor] Failed to send error message:', sendError);
+        // إرسال رسالة خطأ للمستخدم عند فشل جميع المحاولات
+        let errorMessage = "*❌ فشل تحليل الصورة.*\n";
+        if (error.message.includes('Encoded image exceeds maximum size')) {
+            errorMessage += "*السبب:* الصورة كبيرة جدًا بعد التشفير. حاول إرسال صورة أصغر.\n";
+        } else if (error.message.includes('API request timed out')) {
+            errorMessage += "*السبب:* انتهت مهلة الطلب. حاول مرة أخرى لاحقًا.\n";
+        } else if (error.response && error.response.status === 413) {
+            errorMessage += "*السبب:* الطلب كبير جدًا. حاول إرسال صورة أصغر.\n";
+        } else {
+            errorMessage += "*السبب:* خطأ غير معروف. حاول مرة أخرى أو تأكد من صحة الصورة المرسلة.\n";
         }
-    } finally {
-        // Clean up resources
-        processingQueue.delete(imageKey);
         
-        // Delete temporary file
+        if (statusMsg && statusMsg.key) {
+            await sock.sendMessage(chatId, { text: errorMessage }, { quoted: quotedMessage, edit: statusMsg.key });
+        } else {
+            await sock.sendMessage(chatId, { text: errorMessage }, { quoted: quotedMessage });
+        }
+        
+        // تسجيل الخطأ في الكونسول بشكل مختصر
+        console.error(`[Image Processor] Final error after ${MAX_RETRY_ATTEMPTS} attempts:`, {
+            message: error.message,
+            stack: error.stack.slice(0, 200),
+            responseStatus: error.response?.status,
+            responseData: error.response?.data?.slice(0, 200),
+        });
+    } finally {
+        processingQueue.delete(imageKey);
         try {
             await fs.unlink(imagePath);
             console.log(`[Image Processor] Temp file deleted: ${imagePath}`);
@@ -394,7 +282,6 @@ const handleImageMessage = async (sock, message) => {
     }
     
     try {
-        // Skip status updates and own messages
         if (message.key.remoteJid === 'status@broadcast' || message.key.fromMe) {
             return;
         }
@@ -407,7 +294,6 @@ const handleImageMessage = async (sock, message) => {
         
         const quotedMessage = message;
         
-        // Extract image message with error handling
         let imageMessage;
         try {
             if (message.message?.imageMessage) {
@@ -415,7 +301,6 @@ const handleImageMessage = async (sock, message) => {
             } else if (message.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage) {
                 imageMessage = message.message.extendedTextMessage.contextInfo.quotedMessage.imageMessage;
             } else {
-                // Not an image message
                 return;
             }
         } catch (error) {
@@ -428,7 +313,6 @@ const handleImageMessage = async (sock, message) => {
             return;
         }
         
-        // Download image content
         let buffer;
         try {
             const stream = await downloadContentFromMessage(imageMessage, 'image');
@@ -452,13 +336,10 @@ const handleImageMessage = async (sock, message) => {
             return;
         }
         
-        // Generate unique temporary file path
         const imageId = Date.now() + Math.floor(Math.random() * 1000);
         const tempImagePath = path.join(TEMP_DIR, `image_${imageId}.jpg`);
         
-        // Write to file
         try {
-            // Ensure temp directory exists
             if (!fsSync.existsSync(TEMP_DIR)) {
                 await fs.mkdir(TEMP_DIR, { recursive: true });
             }
@@ -470,7 +351,6 @@ const handleImageMessage = async (sock, message) => {
             return;
         }
         
-        // Process the image
         await processImage(sock, chatId, tempImagePath, quotedMessage);
         
     } catch (error) {
@@ -499,11 +379,9 @@ const shutdown = async () => {
             clearInterval(cacheCleanupInterval);
         }
         
-        // Clean up any resources
         processedImages.clear();
         processingQueue.clear();
         
-        // Delete all temporary files
         try {
             const files = await fs.readdir(TEMP_DIR);
             for (const file of files) {
@@ -529,5 +407,5 @@ module.exports = {
     handleImageMessage,
     initialize,
     shutdown,
-    processImage, // Exported for testing purposes
+    processImage,
 };
