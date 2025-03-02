@@ -4,6 +4,7 @@ const path = require('path');
 const { google } = require('googleapis');
 const { sendFormattedMessage, sendErrorMessage } = require('./messageUtils');
 const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
+const ffmpeg = require('fluent-ffmpeg');
 
 // Constants
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -16,7 +17,7 @@ let vision;
 try {
     vision = google.vision({
         version: 'v1',
-        auth: process.env.GOOGLE_VISION_API_KEY || 'AIzaSyDGXCFF6aIa6NVXYwtnQ4aZSjtMNR8KLC0'
+        auth: process.env.GOOGLE_VISION_API_KEY || 'YOUR_API_KEY_HERE'
     });
 } catch (error) {
     console.error('[Image Processor] Failed to initialize Google Vision API:', error);
@@ -90,6 +91,23 @@ const cleanupCache = async () => {
 };
 
 /**
+ * Compress image using FFmpeg
+ * @param {String} inputPath - Path to the input image
+ * @param {String} outputPath - Path to save the compressed image
+ * @returns {Promise<void>}
+ */
+const compressImage = (inputPath, outputPath) => {
+    return new Promise((resolve, reject) => {
+        ffmpeg(inputPath)
+            .outputOptions('-vf', 'scale=1024:-1') // Resize to width 1024, maintain aspect ratio
+            .outputOptions('-q:v', '5') // Set JPEG quality (1-31, lower is better quality but larger size)
+            .save(outputPath)
+            .on('end', () => resolve())
+            .on('error', (err) => reject(new Error(`FFmpeg error: ${err.message}`)));
+    });
+};
+
+/**
  * Process an image using Google Cloud Vision API
  * @param {Object} sock - Socket connection object
  * @param {String} chatId - Chat ID
@@ -114,27 +132,41 @@ const processImage = async (sock, chatId, imagePath, quotedMessage, retryCount =
     
     let statusMsg;
     let imageBuffer;
+    let compressedImagePath = path.join(TEMP_DIR, `compressed_${path.basename(imagePath)}`);
     
     try {
         statusMsg = await sock.sendMessage(chatId, {
             text: "*جاري تحليل الصورة... 🤖🔍*",
         }, { quoted: quotedMessage });
         
-        await fs.access(imagePath);
-        imageBuffer = await fs.readFile(imagePath);
-        
-        if (imageBuffer.length > MAX_IMAGE_SIZE) {
-            throw new Error('Image exceeds maximum size limit of 10MB');
+        // Compress the image using FFmpeg
+        try {
+            await compressImage(imagePath, compressedImagePath);
+            console.log(`[Image Processor] Image compressed to: ${compressedImagePath}`);
+        } catch (compressError) {
+            throw new Error(`Failed to compress image: ${compressError.message}`);
         }
         
-        // تحويل الصورة إلى base64 والتحقق من حجمها
+        // Read the compressed image
+        await fs.access(compressedImagePath);
+        imageBuffer = await fs.readFile(compressedImagePath);
+        
+        // Log original and compressed sizes
+        const originalSize = (await fs.stat(imagePath)).size;
+        const compressedSize = imageBuffer.length;
+        console.log(`[Image Processor] Original image size: ${(originalSize / 1024 / 1024).toFixed(2)} MB`);
+        console.log(`[Image Processor] Compressed image size: ${(compressedSize / 1024 / 1024).toFixed(2)} MB`);
+        
+        // Convert to Base64 and check size
         const imageBase64 = imageBuffer.toString('base64');
         const base64Size = Buffer.byteLength(imageBase64);
+        console.log(`[Image Processor] Base64 encoded size: ${(base64Size / 1024 / 1024).toFixed(2)} MB`);
+        
         if (base64Size > MAX_IMAGE_SIZE) {
             throw new Error(`Encoded image exceeds maximum size limit of 10MB (size: ${(base64Size / 1024 / 1024).toFixed(2)}MB)`);
         }
         
-        // إعداد الطلب إلى API
+        // Prepare API request
         const request = {
             image: {
                 content: imageBase64,
@@ -148,22 +180,22 @@ const processImage = async (sock, chatId, imagePath, quotedMessage, retryCount =
             ],
         };
         
-        // إرسال الطلب مع تحديد مهلة زمنية
+        // Send request with timeout
         const [result] = await Promise.race([
-            vision.images.annotate({ request: request }),
+            vision.images.annotate({ requestBody: { requests: [request] } }),
             new Promise((_, reject) => setTimeout(() => reject(new Error('API request timed out')), API_TIMEOUT))
         ]);
         
         const response = result.responses[0];
         
-        // استخراج البيانات مع معالجة الأخطاء
+        // Extract data with error handling
         const labels = response.labelAnnotations || [];
         const texts = response.textAnnotations || [];
         const safeSearch = response.safeSearchAnnotation || {};
         const webEntities = response.webDetection?.webEntities || [];
         const imageProperties = response.imagePropertiesAnnotation || {};
         
-        // بناء نص التحليل
+        // Build analysis text
         let analysisText = "*🤖 تحليل الصورة:*\n\n";
         
         if (labels.length > 0) {
@@ -216,7 +248,7 @@ const processImage = async (sock, chatId, imagePath, quotedMessage, retryCount =
         
         analysisText += "*شكراً لاستخدامك Zaky AI لتحليل الصور! 🤖*";
         
-        // إرسال نص التحليل
+        // Send analysis message
         if (statusMsg && statusMsg.key) {
             await sock.sendMessage(chatId, { text: analysisText }, { quoted: quotedMessage, edit: statusMsg.key });
         } else {
@@ -227,14 +259,14 @@ const processImage = async (sock, chatId, imagePath, quotedMessage, retryCount =
     } catch (error) {
         console.error(`[Image Processor] Error analyzing image (attempt ${retryCount + 1}/${MAX_RETRY_ATTEMPTS}):`, error);
         
-        // إعادة المحاولة في حالة أخطاء محددة
+        // Retry on specific errors
         if (retryCount < MAX_RETRY_ATTEMPTS - 1 && (error.message.includes('timeout') || error.response?.status === 500)) {
             console.log(`[Image Processor] Retrying image analysis (${retryCount + 1}/${MAX_RETRY_ATTEMPTS})...`);
             processingQueue.delete(imageKey);
             return processImage(sock, chatId, imagePath, quotedMessage, retryCount + 1);
         }
         
-        // إرسال رسالة خطأ للمستخدم عند فشل جميع المحاولات
+        // Send error message to user on final failure
         let errorMessage = "*❌ فشل تحليل الصورة.*\n";
         if (error.message.includes('Encoded image exceeds maximum size')) {
             errorMessage += "*السبب:* الصورة كبيرة جدًا بعد التشفير. حاول إرسال صورة أصغر.\n";
@@ -252,7 +284,7 @@ const processImage = async (sock, chatId, imagePath, quotedMessage, retryCount =
             await sock.sendMessage(chatId, { text: errorMessage }, { quoted: quotedMessage });
         }
         
-        // تسجيل الخطأ في الكونسول بشكل مختصر
+        // Log error concisely
         console.error(`[Image Processor] Final error after ${MAX_RETRY_ATTEMPTS} attempts:`, {
             message: error.message,
             stack: error.stack.slice(0, 200),
@@ -263,146 +295,15 @@ const processImage = async (sock, chatId, imagePath, quotedMessage, retryCount =
         processingQueue.delete(imageKey);
         try {
             await fs.unlink(imagePath);
-            console.log(`[Image Processor] Temp file deleted: ${imagePath}`);
+            await fs.unlink(compressedImagePath);
+            console.log(`[Image Processor] Temp files deleted: ${imagePath}, ${compressedImagePath}`);
         } catch (unlinkError) {
-            console.error(`[Image Processor] Error deleting temp file: ${unlinkError}`);
+            console.error(`[Image Processor] Error deleting temp files: ${unlinkError}`);
         }
     }
 };
 
-/**
- * Handle incoming image messages
- * @param {Object} sock - Socket connection object
- * @param {Object} message - Message object
- */
-const handleImageMessage = async (sock, message) => {
-    if (!message || !message.key) {
-        console.error('[Image Processor] Invalid message object');
-        return;
-    }
-    
-    try {
-        if (message.key.remoteJid === 'status@broadcast' || message.key.fromMe) {
-            return;
-        }
-        
-        const chatId = message.key.remoteJid;
-        if (!chatId) {
-            console.error('[Image Processor] Invalid chat ID');
-            return;
-        }
-        
-        const quotedMessage = message;
-        
-        let imageMessage;
-        try {
-            if (message.message?.imageMessage) {
-                imageMessage = message.message.imageMessage;
-            } else if (message.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage) {
-                imageMessage = message.message.extendedTextMessage.contextInfo.quotedMessage.imageMessage;
-            } else {
-                return;
-            }
-        } catch (error) {
-            console.error('[Image Processor] Error extracting image message:', error);
-            return;
-        }
-        
-        if (!imageMessage) {
-            console.error('[Image Processor] No image message found');
-            return;
-        }
-        
-        let buffer;
-        try {
-            const stream = await downloadContentFromMessage(imageMessage, 'image');
-            if (!stream) {
-                throw new Error('Failed to get download stream');
-            }
-            
-            buffer = Buffer.from([]);
-            for await (const chunk of stream) {
-                buffer = Buffer.concat([buffer, chunk]);
-            }
-        } catch (downloadError) {
-            console.error('[Image Processor] Error downloading image:', downloadError);
-            await sendErrorMessage(sock, chatId, 'فشل تحميل الصورة. حاول مرة أخرى.', quotedMessage);
-            return;
-        }
-        
-        if (!buffer || buffer.length === 0) {
-            console.error('[Image Processor] Empty buffer after download');
-            await sendErrorMessage(sock, chatId, 'الصورة فارغة أو تالفة. حاول مرة أخرى.', quotedMessage);
-            return;
-        }
-        
-        const imageId = Date.now() + Math.floor(Math.random() * 1000);
-        const tempImagePath = path.join(TEMP_DIR, `image_${imageId}.jpg`);
-        
-        try {
-            if (!fsSync.existsSync(TEMP_DIR)) {
-                await fs.mkdir(TEMP_DIR, { recursive: true });
-            }
-            
-            await fs.writeFile(tempImagePath, buffer);
-        } catch (writeError) {
-            console.error('[Image Processor] Error writing temp file:', writeError);
-            await sendErrorMessage(sock, chatId, 'فشل حفظ الصورة للمعالجة. حاول مرة أخرى.', quotedMessage);
-            return;
-        }
-        
-        await processImage(sock, chatId, tempImagePath, quotedMessage);
-        
-    } catch (error) {
-        console.error('[Image Processor] Unexpected error in handleImageMessage:', error);
-        try {
-            if (message && message.key && message.key.remoteJid) {
-                await sendErrorMessage(
-                    sock, 
-                    message.key.remoteJid, 
-                    'حدث خطأ غير متوقع أثناء معالجة الصورة. حاول مرة أخرى لاحقاً.', 
-                    message
-                );
-            }
-        } catch (sendError) {
-            console.error('[Image Processor] Failed to send error message:', sendError);
-        }
-    }
-};
-
-/**
- * Shutdown and cleanup resources
- */
-const shutdown = async () => {
-    try {
-        if (cacheCleanupInterval) {
-            clearInterval(cacheCleanupInterval);
-        }
-        
-        processedImages.clear();
-        processingQueue.clear();
-        
-        try {
-            const files = await fs.readdir(TEMP_DIR);
-            for (const file of files) {
-                try {
-                    await fs.unlink(path.join(TEMP_DIR, file));
-                } catch (unlinkError) {
-                    console.error(`[Image Processor] Error deleting file during shutdown: ${unlinkError.message}`);
-                }
-            }
-        } catch (readError) {
-            console.error(`[Image Processor] Error reading temp directory during shutdown: ${readError.message}`);
-        }
-        
-        console.log('[Image Processor] Shutdown complete');
-        return true;
-    } catch (error) {
-        console.error('[Image Processor] Error during shutdown:', error);
-        return false;
-    }
-};
-
+// Export module functions
 module.exports = {
     handleImageMessage,
     initialize,
