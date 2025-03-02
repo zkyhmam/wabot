@@ -5,13 +5,10 @@ const {
     isJidBroadcast,
     makeInMemoryStore,
     useMultiFileAuthState,
-    isJidGroup,
-    generateRegistrationId,
-    generateWAMessage,
-
+    isJidGroup
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
-const qrcode = require("qrcode-terminal");
+const qrcode = require("qrcode"); // تغيير: استخدام مكتبة qrcode
 const fs = require("fs");
 const path = require('path');
 const pino = require("pino");
@@ -151,57 +148,19 @@ const connectToWhatsApp = async () => {
     const { version } = await fetchLatestBaileysVersion();
     console.log("➡️  connectToWhatsApp: تم الحصول على أحدث إصدار من Baileys:", version);
 
-    const phoneNumber = "201025930797"; // رقم الهاتف لتسجيل الدخول بالكود
-
-    if (phoneNumber) {
-        // تسجيل الدخول باستخدام الكود
-
-        // إنشاء رسالة اقتران وهمية *قبل* إنشاء الاتصال
-        const registrationId = generateRegistrationId();
-        const msg = await generateWAMessage(
-            phoneNumber + "@s.whatsapp.net", // الرقم مع النطاق
-            {
-                text: "Pairing code request", // إضافة محتوى نصي
-                registrationId: registrationId,
-            },
-            {
-                userJid: phoneNumber + "@s.whatsapp.net",
-                logger: pino({ level: "silent" }),
-            }
-        );
-
-        // استخراج كود الاقتران من الرسالة
-        const code = msg.key.id;
-        console.log("كود تسجيل الدخول:", code);
-
-
-
-        sock = makeWASocket({
-            printQRInTerminal: false, // عدم طباعة رمز الاستجابة السريعة
-            auth: state,
-            logger: pino({ level: "silent" }),
-            version,
-            usePairingCode: true, // تفعيل تسجيل الدخول بالكود
-            phoneNumber: phoneNumber,
-        });
-
-    } else {
-        // تسجيل الدخول باستخدام رمز الاستجابة السريعة (QR code)
-        sock = makeWASocket({
-            printQRInTerminal: true,
-            auth: state,
-            logger: pino({ level: "silent" }),
-            version,
-            shouldIgnoreJid: (jid) => isJidBroadcast(jid),
-        });
-    }
-
+    sock = makeWASocket({
+        printQRInTerminal: false, // تغيير: عدم طباعة الرمز في الطرفية
+        auth: state,
+        logger: pino({ level: "silent" }),
+        version,
+        shouldIgnoreJid: (jid) => isJidBroadcast(jid),
+    });
 
     store.bind(sock.ev);
 
     sock.ev.on("connection.update", async (update) => {
         console.log("🔄  connection.update:", update);
-        const { connection, lastDisconnect, pairingCode } = update; // إزالة qr من هنا
+        const { connection, lastDisconnect } = update;
 
         if (connection === "open") {
             botNumber = sock.user.id.split(":")[0] + "@s.whatsapp.net"; // استخراج رقم البوت
@@ -229,10 +188,20 @@ const connectToWhatsApp = async () => {
         }
 
         if (update.qr) {
-            qr = update.qr; // الآن qr يشير إلى المتغير العام القابل للتعديل
+            qr = update.qr;
             updateQR("qr");
-        }
 
+            // إرسال رابط ملف HTML إلى المستخدم
+            const qrFilePath = path.join(__dirname, 'qr.html'); // مسار الملف
+            // استبدل 'your_number@s.whatsapp.net' برقمك أو رقم المستخدم
+            if (sock) { //  تأكد من أن الاتصال مفتوح قبل الإرسال
+              try{
+                await sock.sendMessage('your_number@s.whatsapp.net', { text: `افتح الرابط لعرض رمز الاستجابة السريعة: file://${qrFilePath}` });
+              } catch (error){
+                console.error("❌  connection.update: خطأ اثناء ارسال الرابط", error)
+              }
+            }
+        }
     });
 
     sock.ev.on("creds.update", saveCreds);
@@ -261,6 +230,10 @@ const connectToWhatsApp = async () => {
             await sock.sendMessage(botNumber, { text: "أنا برد على نفسي! 🤖" });
         }
     });
+      // استدعاء updateQR لتوليد رمز الاستجابة السريعة عند بدء التشغيل
+      if (qr) {
+        updateQR("qr");
+    }
 };
 
 async function handleCommand(sock, noWa, message, command, query, args, handler) {
@@ -312,12 +285,49 @@ const deleteAuthData = () => {
     }
 };
 
-const updateQR = (data) => {
+const updateQR = async (data) => { // تغيير: الدالة أصبحت async
+    const qrFilePath = path.join(__dirname, 'qr.png'); // مسار حفظ الصورة
+    const htmlFilePath = path.join(__dirname, 'qr.html'); // مسار ملف HTML
+
     switch (data) {
         case "qr":
-            qrcode.generate(qr, { small: true });
+            try {
+                // إنشاء صورة رمز الاستجابة السريعة
+                await qrcode.toFile(qrFilePath, qr, { errorCorrectionLevel: 'H' }); // تغيير: استخدام qrcode.toFile
+
+                // إنشاء ملف HTML
+                const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>QR Code</title>
+</head>
+<body>
+    <h1>QR Code</h1>
+    <img src="qr.png" alt="QR Code">
+</body>
+</html>
+`;
+                fs.writeFileSync(htmlFilePath, htmlContent);
+                console.log("✅  updateQR: تم إنشاء رمز الاستجابة السريعة وملف HTML.");
+
+            } catch (error) {
+                console.error("❌  updateQR: خطأ أثناء إنشاء رمز الاستجابة السريعة أو ملف HTML:", error);
+            }
             break;
         case "qrscanned":
+             // حذف ملف QR code
+            try{
+                fs.unlinkSync(qrFilePath)
+            } catch(err){
+                console.error("❌ updateQR: خطأ اثناء حذف ملف الصورة", err)
+            }
+            // حذف ملف html
+            try{
+                fs.unlinkSync(htmlFilePath)
+            } catch(err){
+                console.error("❌ updateQR: خطأ اثناء حذف ملف html", err)
+            }
             break;
     }
 };
