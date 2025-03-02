@@ -17,7 +17,7 @@ let vision;
 try {
     vision = google.vision({
         version: 'v1',
-        auth: process.env.GOOGLE_VISION_API_KEY || 'YOUR_API_KEY_HERE'
+        auth: process.env.GOOGLE_VISION_API_KEY || 'AIzaSyDGXCFF6aIa6NVXYwtnQ4aZSjtMNR8KLC0'
     });
 } catch (error) {
     console.error('[Image Processor] Failed to initialize Google Vision API:', error);
