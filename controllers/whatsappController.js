@@ -1,8 +1,5 @@
 /**
  * Improved WhatsApp Bot Implementation
- * ===================================
- * Advanced NodeJS WhatsApp Bot with enhanced architecture and features
- * Implements modular design, error handling, logging, and performance optimization
  */
 
 const {
@@ -50,7 +47,8 @@ const CONFIG = {
     RECONNECT_INTERVAL: 3000,
     MAX_RETRIES: 5,
     COMMAND_PREFIX_REGEX: /^[\/.]|#/,
-    ADMIN_NUMBERS: (process.env.ADMIN_NUMBERS || '').split(',').map(num => num.trim())
+    ADMIN_NUMBERS: (process.env.ADMIN_NUMBERS || '').split(',').map(num => num.trim()),
+    SERVER_PORT: process.env.PORT || 8000, // إضافة:  الحصول على رقم المنفذ من المتغيرات البيئية
 };
 
 let autoReply = {};
@@ -390,6 +388,22 @@ const connectToWhatsApp = async () => {
                 logger.info(`تم الاتصال بنجاح.  رقم البوت: ${botNumber}`);
                 connectionRetries = 0;
 
+                // الحصول على عنوان IP المحلي
+                const networkInterfaces = os.networkInterfaces();
+                let localIpAddress = 'localhost'; // القيمة الافتراضية
+                 for (const interfaceName in networkInterfaces) {
+                    for (const iface of networkInterfaces[interfaceName]) {
+                        if ('IPv4' !== iface.family || iface.internal !== false) {
+                            // تخطي الواجهات الداخلية وغير IPv4
+                            continue;
+                        }
+                        localIpAddress = iface.address;
+                        break; //  نفترض أن أول عنوان IPv4 غير داخلي هو العنوان المطلوب
+                    }
+                    if(localIpAddress !== 'localhost') break; // نتوقف عند العثور على اول عنوان
+                }
+
+
                 for (const admin of CONFIG.ADMIN_NUMBERS) {
                     try {
                         await sock.sendMessage(`${admin}@s.whatsapp.net`, {
@@ -417,6 +431,10 @@ const connectToWhatsApp = async () => {
                         logger.error("خطأ أثناء إرسال الرابط المُخزّن", error);
                     }
                 }
+
+                 // طباعة الرابط في الـ console
+                console.log(`QR Code Link: http://${localIpAddress}:${CONFIG.SERVER_PORT}/qr.html`);
+
             }
 
             if (connection === "close") {
@@ -617,7 +635,24 @@ const updateQR = async (data) => {
                 fs.writeFileSync(CONFIG.QR_HTML_PATH, htmlContent);
                 logger.info("تم إنشاء رمز الاستجابة السريعة وملف HTML.");
 
-                qrCodeLinkToSend = `افتح الرابط لعرض رمز الاستجابة السريعة: file://${CONFIG.QR_HTML_PATH}`;
+                // الحصول على عنوان IP المحلي
+                const networkInterfaces = os.networkInterfaces();
+                let localIpAddress = 'localhost'; // القيمة الافتراضية
+                for (const interfaceName in networkInterfaces) {
+                    for (const iface of networkInterfaces[interfaceName]) {
+                        if ('IPv4' !== iface.family || iface.internal !== false) {
+                            // تخطي الواجهات الداخلية وغير IPv4
+                            continue;
+                        }
+                        localIpAddress = iface.address;
+                        break; //  نفترض أن أول عنوان IPv4 غير داخلي هو العنوان المطلوب
+                    }
+                     if(localIpAddress !== 'localhost') break;
+                }
+
+                // تحديث الرابط ليتضمن عنوان IP المحلي ورقم المنفذ
+                qrCodeLinkToSend = `افتح الرابط لعرض رمز الاستجابة السريعة: http://${localIpAddress}:${CONFIG.SERVER_PORT}/qr.html`;
+
 
             } catch (error) {
                 logger.error("خطأ أثناء إنشاء رمز الاستجابة السريعة أو ملف HTML", error);
