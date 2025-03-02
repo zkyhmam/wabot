@@ -1,3 +1,4 @@
+// whatsappController.js
 const {
     default: makeWASocket,
     DisconnectReason,
@@ -16,13 +17,14 @@ const pino = require("pino");
 // استيراد الدوال من الملفات الأخرى
 const { stickerArabicCommand, takeCommand } = require('./sticker.js');
 const { ttsArabicCommand } = require('./tts.js');
-const { downloadSong, downloadVideo, searchAndDisplay } = require('./yt.js'); // تحديث: استيراد الدوال الجديدة
+const { downloadSong, downloadVideo, searchAndDisplay } = require('./yt.js');
 const { imageSearch, gifSearch } = require("./img.js");
 const { movieCommand } = require("./movie.js");
 const helpController = require("./help.js");
 const { sendErrorMessage, sendFormattedMessage } = require("./messageUtils");
 const { sendSecretMessage, handleReply } = require('./secretMessages.js');
 const { adminCommands, ensureDirectoriesExist, loadSettings, setBotNumber } = require('./admin.js');
+const { handleImageMessage } = require('./vision.js'); // Import the new image handler
 
 // تعريف المتغيرات العالمية
 let autoReply = {};
@@ -40,14 +42,20 @@ const logErrorToFile = (error, command, message) => {
     fs.appendFileSync(logFile, logEntry);
 };
 
+// دالة لمنع البوت من معالجة رسائله الخاصة في vision.js
+const shouldProcessImage = (message) => {
+    return !(message.key.remoteJid === 'status@broadcast' || message.key.fromMe);
+};
+
+
 // تعريف الأوامر العامة وأوامر الأدمن
 const commandRoutes = {
     'sticker': stickerArabicCommand,
     'take': takeCommand,
     'tts': ttsArabicCommand,
-    'song': downloadSong, // تحديث: ربط الأمر بالدالة الجديدة
-    'video': downloadVideo, // إضافة الأمر الجديد
-    'yts': searchAndDisplay, // إضافة الأمر الجديد
+    'song': downloadSong,
+    'video': downloadVideo,
+    'yts': searchAndDisplay,
     'img': imageSearch,
     'gif': gifSearch,
     'movie': movieCommand,
@@ -198,29 +206,64 @@ const connectToWhatsApp = async () => {
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
-        if (type !== "notify") return; // لا تتجاهل أي رسائل، بما في ذلك من البوت نفسه
+      if (type !== "notify") return;
 
-        const message = messages[0];
-        const noWa = message.key.remoteJid;
-        let pesan = message.message?.conversation || message.message?.extendedTextMessage?.text || '';
+      const message = messages[0];
+      const noWa = message.key.remoteJid;
+      let pesan = message.message?.conversation || message.message?.extendedTextMessage?.text || '';
 
-        console.log(`📩  messages.upsert: رسالة جديدة من ${noWa}، الرسالة: ${pesan}`);
-
-        const prefixRegex = /^[\/.]|#/;
-        if (prefixRegex.test(pesan.trim().charAt(0))) {
-            let args = pesan.slice(1).trim().split(/\s+/);
-            const command = args.shift().toLowerCase();
-            const query = args.join(" ");
-            console.log(`🔄  messages.upsert: تنفيذ الأمر: ${command}, الاستعلام: ${query}`);
-
-            const handler = commandRoutes[command];
-            await handleCommand(sock, noWa, message, command, query, args, handler);
-        } else if (message.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
-            await handleReply(sock, message);
-        } else if (noWa === botNumber && pesan.toLowerCase() === "test") { // اختبار الرد على النفس
-            await sock.sendMessage(botNumber, { text: "أنا برد على نفسي! 🤖" });
+      // تعديل رسائل البوت نفسه
+      if (message.key.fromMe) {
+        if(message.message?.extendedTextMessage?.contextInfo?.quotedMessage?.conversation){
+          message.message.extendedTextMessage.contextInfo.quotedMessage.conversation = message.message.extendedTextMessage.contextInfo.quotedMessage.conversation.replace(/Zaky AI 🤖/g, 'Zaky Bot 🤖');
         }
-    });
+          // تعديل الرسائل النصية
+          if (message.message?.conversation) {
+              message.message.conversation = message.message.conversation.replace(/Zaky AI 🤖/g, 'Zaky Bot 🤖');
+          }
+          if (message.message?.extendedTextMessage?.text) {
+              message.message.extendedTextMessage.text = message.message.extendedTextMessage.text.replace(/Zaky AI 🤖/g, 'Zaky Bot 🤖');
+          }
+          // تعديل رسائل الأزرار
+          if (message.message?.buttonsMessage?.caption) {
+              message.message.buttonsMessage.caption = message.message.buttonsMessage.caption.replace(/Zaky AI 🤖/g, 'Zaky Bot 🤖');
+          }
+          if (message.message?.buttonsMessage?.footer) {
+              message.message.buttonsMessage.footer = message.message.buttonsMessage.footer.replace(/Zaky AI 🤖/g, 'Zaky Bot 🤖');
+          }
+           // تعديل الرسائل التي تحتوي على صور
+          if (message.message?.imageMessage?.caption) {
+              message.message.imageMessage.caption = message.message.imageMessage.caption.replace(/Zaky AI 🤖/g, "Zaky Bot 🤖");
+          }
+
+          // تعديل الرسائل التي تحتوي على مقاطع فيديو
+          if (message.message?.videoMessage?.caption) {
+              message.message.videoMessage.caption = message.message.videoMessage.caption.replace(/Zaky AI 🤖/g, "Zaky Bot 🤖");
+          }
+        }
+
+      console.log(`📩  messages.upsert: رسالة جديدة من ${noWa}، الرسالة: ${pesan}`);
+
+      // معالجة الصور (إذا كانت الرسالة ليست من البوت)
+      if (shouldProcessImage(message)) {
+          await handleImageMessage(sock, message);
+      }
+
+      const prefixRegex = /^[\/.]|#/;
+      if (prefixRegex.test(pesan.trim().charAt(0))) {
+          let args = pesan.slice(1).trim().split(/\s+/);
+          const command = args.shift().toLowerCase();
+          const query = args.join(" ");
+          console.log(`🔄  messages.upsert: تنفيذ الأمر: ${command}, الاستعلام: ${query}`);
+
+          const handler = commandRoutes[command];
+          await handleCommand(sock, noWa, message, command, query, args, handler);
+      } else if (message.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
+          await handleReply(sock, message);
+      } else if (noWa === botNumber && pesan.toLowerCase() === "test") {
+          await sock.sendMessage(botNumber, { text: "أنا برد على نفسي! 🤖" });
+      }
+  });
 };
 
 async function handleCommand(sock, noWa, message, command, query, args, handler) {
