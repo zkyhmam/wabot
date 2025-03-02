@@ -31,7 +31,6 @@ const store = makeInMemoryStore({ logger: pino().child({ level: "silent" }) });
 let sock;
 let qr;
 let botNumber; // متغير لتخزين رقم البوت
-let pairingCode; // متغير لتخزين كود تسجيل الدخول
 
 // إعداد ملف تسجيل الأخطاء
 const logErrorToFile = (error, command, message) => {
@@ -179,7 +178,7 @@ const connectToWhatsApp = async () => {
 
     sock.ev.on("connection.update", async (update) => {
         console.log("🔄  connection.update:", update);
-        const { connection, lastDisconnect, qr, pairingCode } = update;
+        const { connection, lastDisconnect, pairingCode } = update; // إزالة qr من هنا
 
         if (connection === "open") {
             botNumber = sock.user.id.split(":")[0] + "@s.whatsapp.net"; // استخراج رقم البوت
@@ -207,11 +206,11 @@ const connectToWhatsApp = async () => {
         }
 
         if (update.qr) {
-            qr = update.qr;
+            qr = update.qr; // الآن qr يشير إلى المتغير العام القابل للتعديل
             updateQR("qr");
         }
-        if (pairingCode) {
-            console.log("كود تسجيل الدخول:", pairingCode);
+        if (update.pairingCode) { // تصحيح pairingCode
+            console.log("كود تسجيل الدخول:", update.pairingCode); // استخدام update.pairingCode
         }
     });
 
