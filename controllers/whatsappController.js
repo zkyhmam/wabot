@@ -6,7 +6,7 @@ const {
     makeInMemoryStore,
     useMultiFileAuthState,
     isJidGroup,
-    generateRegistrationId, // استيراد getDevice
+    generateRegistrationId,
     generateWAMessage,
 
 } = require("@whiskeysockets/baileys");
@@ -161,6 +161,7 @@ const connectToWhatsApp = async () => {
         const msg = await generateWAMessage(
             phoneNumber + "@s.whatsapp.net", // الرقم مع النطاق
             {
+                text: "Pairing code request", // إضافة محتوى نصي
                 registrationId: registrationId,
             },
             {
