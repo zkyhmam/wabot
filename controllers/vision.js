@@ -303,6 +303,106 @@ const processImage = async (sock, chatId, imagePath, quotedMessage, retryCount =
     }
 };
 
+/**
+ * Handle incoming image messages
+ * @param {Object} sock - Socket connection object
+ * @param {Object} message - Message object
+ */
+const handleImageMessage = async (sock, message) => {
+    if (!message || !message.key) {
+        console.error('[Image Processor] Invalid message object');
+        return;
+    }
+    
+    try {
+        // Skip status updates and own messages
+        if (message.key.remoteJid === 'status@broadcast' || message.key.fromMe) {
+            return;
+        }
+        
+        const chatId = message.key.remoteJid;
+        if (!chatId) {
+            console.error('[Image Processor] Invalid chat ID');
+            return;
+        }
+        
+        const quotedMessage = message;
+        
+        // Extract image message
+        let imageMessage;
+        if (message.message?.imageMessage) {
+            imageMessage = message.message.imageMessage;
+        } else if (message.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage) {
+            imageMessage = message.message.extendedTextMessage.contextInfo.quotedMessage.imageMessage;
+        } else {
+            return; // No image to process
+        }
+        
+        // Download image content
+        const stream = await downloadContentFromMessage(imageMessage, 'image');
+        let buffer = Buffer.from([]);
+        for await (const chunk of stream) {
+            buffer = Buffer.concat([buffer, chunk]);
+        }
+        
+        if (!buffer || buffer.length === 0) {
+            console.error('[Image Processor] Empty buffer after download');
+            await sendErrorMessage(sock, chatId, 'الصورة فارغة أو تالفة. حاول مرة أخرى.', quotedMessage);
+            return;
+        }
+        
+        // Generate unique temporary file path
+        const imageId = Date.now() + Math.floor(Math.random() * 1000);
+        const tempImagePath = path.join(TEMP_DIR, `image_${imageId}.jpg`);
+        
+        // Write to file
+        if (!fsSync.existsSync(TEMP_DIR)) {
+            await fs.mkdir(TEMP_DIR, { recursive: true });
+        }
+        await fs.writeFile(tempImagePath, buffer);
+        
+        // Process the image
+        await processImage(sock, chatId, tempImagePath, quotedMessage);
+        
+    } catch (error) {
+        console.error('[Image Processor] Unexpected error in handleImageMessage:', error);
+        await sendErrorMessage(sock, message.key.remoteJid, 'حدث خطأ أثناء معالجة الصورة. حاول مرة أخرى لاحقًا.', message);
+    }
+};
+
+/**
+ * Shutdown and cleanup resources
+ */
+const shutdown = async () => {
+    try {
+        if (cacheCleanupInterval) {
+            clearInterval(cacheCleanupInterval);
+        }
+        
+        processedImages.clear();
+        processingQueue.clear();
+        
+        try {
+            const files = await fs.readdir(TEMP_DIR);
+            for (const file of files) {
+                try {
+                    await fs.unlink(path.join(TEMP_DIR, file));
+                } catch (unlinkError) {
+                    console.error(`[Image Processor] Error deleting file during shutdown: ${unlinkError.message}`);
+                }
+            }
+        } catch (readError) {
+            console.error(`[Image Processor] Error reading temp directory during shutdown: ${readError.message}`);
+        }
+        
+        console.log('[Image Processor] Shutdown complete');
+        return true;
+    } catch (error) {
+        console.error('[Image Processor] Error during shutdown:', error);
+        return false;
+    }
+};
+
 // Export module functions
 module.exports = {
     handleImageMessage,
