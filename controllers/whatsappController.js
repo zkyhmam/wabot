@@ -30,6 +30,7 @@ const store = makeInMemoryStore({ logger: pino().child({ level: "silent" }) });
 let sock;
 let qr;
 let botNumber; // متغير لتخزين رقم البوت
+let qrCodeLinkToSend = null; // متغير لتخزين رابط رمز الاستجابة السريعة
 
 // إعداد ملف تسجيل الأخطاء
 const logErrorToFile = (error, command, message) => {
@@ -40,7 +41,7 @@ const logErrorToFile = (error, command, message) => {
     fs.appendFileSync(logFile, logEntry);
 };
 
-// تعريف الأوامر العامة وأوامر الأدمن
+// ... (بقية الأوامر commandRoutes - لا تغيير هنا) ...
 const commandRoutes = {
     'sticker': stickerArabicCommand,
     'take': takeCommand,
@@ -139,8 +140,8 @@ const commandNames = Object.keys(commandRoutes);
 const connectToWhatsApp = async () => {
     console.log("➡️  connectToWhatsApp: بدء الدالة");
 
-    await ensureDirectoriesExist(); // إنشاء المجلدات الضرورية من admin.js
-    await loadSettings(); // تحميل إعدادات الأدمن
+    await ensureDirectoriesExist();
+    await loadSettings();
 
     const { state, saveCreds } = await useMultiFileAuthState("baileys_auth_info");
     console.log("➡️  connectToWhatsApp: تم تحميل/إنشاء بيانات المصادقة");
@@ -149,7 +150,7 @@ const connectToWhatsApp = async () => {
     console.log("➡️  connectToWhatsApp: تم الحصول على أحدث إصدار من Baileys:", version);
 
     sock = makeWASocket({
-        printQRInTerminal: false, // تغيير: عدم طباعة الرمز في الطرفية
+        printQRInTerminal: false,
         auth: state,
         logger: pino({ level: "silent" }),
         version,
@@ -163,14 +164,25 @@ const connectToWhatsApp = async () => {
         const { connection, lastDisconnect } = update;
 
         if (connection === "open") {
-            botNumber = sock.user.id.split(":")[0] + "@s.whatsapp.net"; // استخراج رقم البوت
-            setBotNumber(botNumber); // تمرير رقم البوت إلى admin.js
+            botNumber = sock.user.id.split(":")[0] + "@s.whatsapp.net";
+            setBotNumber(botNumber);
             console.log("🔹 رقم البوت:", botNumber);
+
+            // إرسال رابط رمز الاستجابة السريعة إذا كان مُخزّنًا
+            if (qrCodeLinkToSend) {
+                try {
+                    await sock.sendMessage('your_number@s.whatsapp.net', { text: qrCodeLinkToSend });
+                    qrCodeLinkToSend = null; // مسح الرابط بعد الإرسال
+                } catch (error) {
+                    console.error("❌  connection.update: خطأ أثناء إرسال الرابط", error);
+                }
+            }
         }
 
         if (connection === "close") {
             const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             console.log("❌  connection.update: تم إغلاق الاتصال بسبب:", reason);
+            // ... (بقية حالات الإغلاق - لا تغيير) ...
             switch (reason) {
                 case DisconnectReason.badSession:
                 case DisconnectReason.connectionReplaced:
@@ -190,23 +202,13 @@ const connectToWhatsApp = async () => {
         if (update.qr) {
             qr = update.qr;
             updateQR("qr");
-
-            // إرسال رابط ملف HTML إلى المستخدم
-            const qrFilePath = path.join(__dirname, 'qr.html'); // مسار الملف
-            // استبدل 'your_number@s.whatsapp.net' برقمك أو رقم المستخدم
-            if (sock) { //  تأكد من أن الاتصال مفتوح قبل الإرسال
-              try{
-                await sock.sendMessage('your_number@s.whatsapp.net', { text: `افتح الرابط لعرض رمز الاستجابة السريعة: file://${qrFilePath}` });
-              } catch (error){
-                console.error("❌  connection.update: خطأ اثناء ارسال الرابط", error)
-              }
-            }
         }
     });
 
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
+       // ... (بقية الكود الخاص بالرسائل - لا تغيير) ...
         if (type !== "notify") return; // لا تتجاهل أي رسائل، بما في ذلك من البوت نفسه
 
         const message = messages[0];
@@ -230,13 +232,10 @@ const connectToWhatsApp = async () => {
             await sock.sendMessage(botNumber, { text: "أنا برد على نفسي! 🤖" });
         }
     });
-      // استدعاء updateQR لتوليد رمز الاستجابة السريعة عند بدء التشغيل
-      if (qr) {
-        updateQR("qr");
-    }
 };
 
 async function handleCommand(sock, noWa, message, command, query, args, handler) {
+   // ... (بقية دالة handleCommand - لا تغيير) ...
     if (!handler) {
         console.log("❌  messages.upsert: أمر غير معروف");
         return await sendErrorMessage(sock, noWa, "*أمر مش معروف 🚫... جرب تكتب `.help` علشان تشوف قائمة الأوامر 📜*");
@@ -277,6 +276,7 @@ async function handleCommand(sock, noWa, message, command, query, args, handler)
 }
 
 const deleteAuthData = () => {
+ // ... (بقية دالة deleteAuthData - لا تغيير) ...
     try {
         fs.rmSync("baileys_auth_info", { recursive: true, force: true });
         console.log("🗑️  تم حذف بيانات الجلسة القديمة.");
@@ -285,17 +285,15 @@ const deleteAuthData = () => {
     }
 };
 
-const updateQR = async (data) => { // تغيير: الدالة أصبحت async
-    const qrFilePath = path.join(__dirname, 'qr.png'); // مسار حفظ الصورة
-    const htmlFilePath = path.join(__dirname, 'qr.html'); // مسار ملف HTML
+const updateQR = async (data) => {
+    const qrFilePath = path.join(__dirname, 'qr.png');
+    const htmlFilePath = path.join(__dirname, 'qr.html');
 
     switch (data) {
         case "qr":
             try {
-                // إنشاء صورة رمز الاستجابة السريعة
-                await qrcode.toFile(qrFilePath, qr, { errorCorrectionLevel: 'H' }); // تغيير: استخدام qrcode.toFile
+                await qrcode.toFile(qrFilePath, qr, { errorCorrectionLevel: 'H' });
 
-                // إنشاء ملف HTML
                 const htmlContent = `
 <!DOCTYPE html>
 <html>
@@ -311,12 +309,15 @@ const updateQR = async (data) => { // تغيير: الدالة أصبحت async
                 fs.writeFileSync(htmlFilePath, htmlContent);
                 console.log("✅  updateQR: تم إنشاء رمز الاستجابة السريعة وملف HTML.");
 
+                // تخزين رابط الملف لإرساله لاحقًا
+                qrCodeLinkToSend = `افتح الرابط لعرض رمز الاستجابة السريعة: file://${htmlFilePath}`;
+
             } catch (error) {
                 console.error("❌  updateQR: خطأ أثناء إنشاء رمز الاستجابة السريعة أو ملف HTML:", error);
             }
             break;
         case "qrscanned":
-             // حذف ملف QR code
+            // ... (بقية حالات updateQR - لا تغيير) ...
             try{
                 fs.unlinkSync(qrFilePath)
             } catch(err){
