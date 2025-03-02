@@ -28,10 +28,8 @@ const moment = require('moment');
 const crypto = require('crypto');
 const dotenv = require('dotenv');
 
-// تحميل المتغيرات البيئية
 dotenv.config();
 
-// استيراد الدوال من الملفات الأخرى
 const { stickerArabicCommand, takeCommand } = require('./sticker.js');
 const { ttsArabicCommand } = require('./tts.js');
 const { downloadSong } = require('./yt.js');
@@ -42,10 +40,8 @@ const { sendErrorMessage, sendFormattedMessage, formatDuration } = require("./me
 const { sendSecretMessage, handleReply } = require('./secretMessages.js');
 const { adminCommands, ensureDirectoriesExist, loadSettings, setBotNumber } = require('./admin.js');
 
-// إنشاء مُحدّث الأحداث
 const botEvents = new eventEmitter();
 
-// تعريف الثوابت
 const CONFIG = {
     AUTH_FOLDER: "baileys_auth_info",
     LOG_FOLDER: path.join(__dirname, '..', 'logs'),
@@ -57,7 +53,6 @@ const CONFIG = {
     ADMIN_NUMBERS: (process.env.ADMIN_NUMBERS || '').split(',').map(num => num.trim())
 };
 
-// تعريف المتغيرات العالمية
 let autoReply = {};
 const store = makeInMemoryStore({ logger: pino().child({ level: "silent" }) });
 let sock;
@@ -71,11 +66,8 @@ let messageStats = {
     commands: 0,
     errors: 0
 };
+let qrCodeLinkToSend = null;
 
-/**
- * نظام تسجيل متطور
- * دعم لتسجيل الأخطاء والمعلومات والإحصائيات
- */
 class Logger {
     constructor() {
         this.ensureLogDirectory();
@@ -153,9 +145,6 @@ class Logger {
 
 const logger = new Logger();
 
-/**
- * معالج أمان لحماية الميزات الإدارية
- */
 class SecurityManager {
     constructor(adminNumbers) {
         this.adminNumbers = adminNumbers;
@@ -184,7 +173,6 @@ class SecurityManager {
 
 const securityManager = new SecurityManager(CONFIG.ADMIN_NUMBERS);
 
-// تعريف الأوامر العامة وأوامر الأدمن
 const commandRoutes = {
     'sticker': stickerArabicCommand,
     'ملصق': stickerArabicCommand,
@@ -252,7 +240,6 @@ const commandRoutes = {
     'حول': async (sock, noWa, message) => {
         await commandRoutes['about'](sock, noWa, message);
     },
-    // أوامر الأدمن
     'at': async (sock, noWa, message, args) => {
         if (!args[0]) return await sock.sendMessage(noWa, { text: "❌ استخدم `.at on` أو `.at off`" });
         const handler = adminCommands['at ' + args[0]];
@@ -320,7 +307,6 @@ const commandRoutes = {
     },
     'logs': async (sock, noWa, message) => {
         try {
-            // قراءة آخر 10 أخطاء من ملف الأخطاء
             const errorLogPath = path.join(CONFIG.LOG_FOLDER, 'error.log');
             if (!fs.existsSync(errorLogPath)) {
                 return await sock.sendMessage(noWa, { text: "✅ لا توجد أخطاء مسجلة" });
@@ -364,13 +350,8 @@ const commandRoutes = {
     }
 };
 
-// استخراج أسماء الأوامر لسهولة الوصول إليها
 const commandNames = Object.keys(commandRoutes);
 
-/**
- * دالة الاتصال بواتساب
- * تعامل مع إعداد الاتصال والمصادقة وإدارة الأحداث
- */
 const connectToWhatsApp = async () => {
     logger.info("بدء عملية الاتصال بواتساب");
 
@@ -384,7 +365,6 @@ const connectToWhatsApp = async () => {
         const { version } = await fetchLatestBaileysVersion();
         logger.info(`تم الحصول على أحدث إصدار من Baileys: ${version}`);
 
-        // إنشاء مثيل الاتصال
         sock = makeWASocket({
             printQRInTerminal: false,
             auth: state,
@@ -398,10 +378,8 @@ const connectToWhatsApp = async () => {
             }
         });
 
-        // ربط المخزن بالاتصال
         store.bind(sock.ev);
 
-        // الاستماع لتحديثات الاتصال
         sock.ev.on("connection.update", async (update) => {
             logger.info("تحديث الاتصال", update);
             const { connection, lastDisconnect } = update;
@@ -409,10 +387,9 @@ const connectToWhatsApp = async () => {
             if (connection === "open") {
                 botNumber = sock.user.id.split(":")[0] + "@s.whatsapp.net";
                 setBotNumber(botNumber);
-                logger.info(`تم الاتصال بنجاح. رقم البوت: ${botNumber}`);
+                logger.info(`تم الاتصال بنجاح.  رقم البوت: ${botNumber}`);
                 connectionRetries = 0;
 
-                // إخطار المشرفين بالتشغيل
                 for (const admin of CONFIG.ADMIN_NUMBERS) {
                     try {
                         await sock.sendMessage(`${admin}@s.whatsapp.net`, {
@@ -426,11 +403,20 @@ const connectToWhatsApp = async () => {
                     }
                 }
 
-                // إزالة ملفات QR بعد الاتصال
                 updateQR("qrscanned");
 
-                // إعلان حدث الاتصال
                 botEvents.emit('connected', botNumber);
+
+                if (qrCodeLinkToSend) {
+                    try {
+                        for (const admin of CONFIG.ADMIN_NUMBERS) {
+                            await sock.sendMessage(`${admin}@s.whatsapp.net`, { text: qrCodeLinkToSend });
+                        }
+                        qrCodeLinkToSend = null;
+                    } catch (error) {
+                        logger.error("خطأ أثناء إرسال الرابط المُخزّن", error);
+                    }
+                }
             }
 
             if (connection === "close") {
@@ -451,7 +437,6 @@ const connectToWhatsApp = async () => {
                     case DisconnectReason.timedOut:
                         logger.info("إعادة محاولة الاتصال");
 
-                        // إضافة تأخير بين المحاولات مع زيادة عدد المحاولات
                         if (connectionRetries < CONFIG.MAX_RETRIES) {
                             connectionRetries++;
                             const delay = CONFIG.RECONNECT_INTERVAL * connectionRetries;
@@ -463,11 +448,9 @@ const connectToWhatsApp = async () => {
                         } else {
                             logger.error("وصلت لأقصى عدد محاولات، فشل الاتصال");
 
-                            // إعادة تعيين العداد وحذف بيانات الجلسة
                             connectionRetries = 0;
                             deleteAuthData();
 
-                            // محاولة أخيرة بعد تأخير أطول
                             setTimeout(() => {
                                 connectToWhatsApp();
                             }, CONFIG.RECONNECT_INTERVAL * 5);
@@ -480,34 +463,17 @@ const connectToWhatsApp = async () => {
                         }, CONFIG.RECONNECT_INTERVAL);
                 }
 
-                // إعلان حدث الانقطاع
                 botEvents.emit('disconnected', reason);
             }
 
             if (update.qr) {
                 qr = update.qr;
                 updateQR("qr");
-
-                // إرسال رابط ملف HTML إلى المستخدم
-                try {
-                    // إرسال رسالة لكل مشرف
-                    for (const admin of CONFIG.ADMIN_NUMBERS) {
-                        if (sock) {
-                            await sock.sendMessage(`${admin}@s.whatsapp.net`, {
-                                text: `افتح الرابط لعرض رمز الاستجابة السريعة: file://${CONFIG.QR_HTML_PATH}`
-                            });
-                        }
-                    }
-                } catch (error) {
-                    logger.error("خطأ أثناء إرسال رابط QR", error);
-                }
             }
         });
 
-        // حفظ بيانات الاعتماد
         sock.ev.on("creds.update", saveCreds);
 
-        // معالجة الرسائل الواردة
         sock.ev.on("messages.upsert", async ({ messages, type }) => {
             if (type !== "notify") return;
 
@@ -520,12 +486,10 @@ const connectToWhatsApp = async () => {
                          message.message?.imageMessage?.caption ||
                          message.message?.videoMessage?.caption || '';
 
-            // تحديث الإحصائيات
             messageStats.received++;
 
             logger.info(`رسالة جديدة من ${noWa}`, { message: pesan });
 
-            // معالجة الأوامر
             if (CONFIG.COMMAND_PREFIX_REGEX.test(pesan.trim().charAt(0))) {
                 let args = pesan.slice(1).trim().split(/\s+/);
                 const command = args.shift().toLowerCase();
@@ -533,7 +497,6 @@ const connectToWhatsApp = async () => {
 
                 logger.command(command, noWa, query);
 
-                // التحقق من صلاحيات الأمر
                 if (!securityManager.validateCommand(command, noWa)) {
                     await sock.sendMessage(noWa, {
                         text: "*⛔ غير مصرح لك باستخدام هذا الأمر*"
@@ -544,23 +507,20 @@ const connectToWhatsApp = async () => {
                 const handler = commandRoutes[command];
                 await handleCommand(sock, noWa, message, command, query, args, handler);
             }
-            // معالجة الردود على الرسائل السرية
             else if (message.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
                 await handleReply(sock, message);
             }
-            // اختبار الرد على النفس
             else if (noWa === botNumber && pesan.toLowerCase() === "test") {
                 await sock.sendMessage(botNumber, { text: "أنا برد على نفسي! 🤖" });
                 messageStats.sent++;
             }
         });
 
-        // استدعاء updateQR لتوليد رمز الاستجابة السريعة عند بدء التشغيل
         if (qr) {
             updateQR("qr");
         }
 
-        return sock; //  إرجاع كائن الاتصال
+        return sock;
     } catch (error) {
         logger.error("خطأ في دالة الاتصال بواتساب", error);
 
@@ -577,9 +537,6 @@ const connectToWhatsApp = async () => {
     }
 };
 
-/**
- * معالجة الأوامر بشكل منفصل
- */
 async function handleCommand(sock, noWa, message, command, query, args, handler) {
     if (!handler) {
         logger.info(`أمر غير معروف: ${command}`);
@@ -590,13 +547,12 @@ async function handleCommand(sock, noWa, message, command, query, args, handler)
         console.log(`🔄  messages.upsert: استدعاء الأمر ${command}`);
         await sock.sendMessage(noWa, { react: { text: "⏳", key: message.key } });
 
-                const sender = {
+        const sender = {
             id: message.key.remoteJid,
             name: message.pushName || "مستخدم",
             pushName: message.pushName || "مستخدم"
         };
 
-        // معالجة الأوامر التي تحتاج إلى on/off أو args خاصة
         if (['at', 'ar', 'as', 'online', 'ata', 'ara', 'autoreply'].includes(command)) {
             if (args.length < 1 || !['on', 'off'].includes(args[0])) {
                 return await sock.sendMessage(noWa, { text: `❌ الأمر \`${command}\` يحتاج إلى \`on\` أو \`off\`` });
@@ -660,6 +616,8 @@ const updateQR = async (data) => {
 `;
                 fs.writeFileSync(CONFIG.QR_HTML_PATH, htmlContent);
                 logger.info("تم إنشاء رمز الاستجابة السريعة وملف HTML.");
+
+                qrCodeLinkToSend = `افتح الرابط لعرض رمز الاستجابة السريعة: file://${CONFIG.QR_HTML_PATH}`;
 
             } catch (error) {
                 logger.error("خطأ أثناء إنشاء رمز الاستجابة السريعة أو ملف HTML", error);
