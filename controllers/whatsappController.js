@@ -5,7 +5,8 @@ const {
     isJidBroadcast,
     makeInMemoryStore,
     useMultiFileAuthState,
-    isJidGroup
+    isJidGroup,
+    getDevice // استيراد getDevice
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
@@ -30,6 +31,7 @@ const store = makeInMemoryStore({ logger: pino().child({ level: "silent" }) });
 let sock;
 let qr;
 let botNumber; // متغير لتخزين رقم البوت
+let pairingCode; // متغير لتخزين كود تسجيل الدخول
 
 // إعداد ملف تسجيل الأخطاء
 const logErrorToFile = (error, command, message) => {
@@ -148,19 +150,36 @@ const connectToWhatsApp = async () => {
     const { version } = await fetchLatestBaileysVersion();
     console.log("➡️  connectToWhatsApp: تم الحصول على أحدث إصدار من Baileys:", version);
 
-    sock = makeWASocket({
-        printQRInTerminal: true,
-        auth: state,
-        logger: pino({ level: "silent" }),
-        version,
-        shouldIgnoreJid: (jid) => isJidBroadcast(jid),
-    });
+    const phoneNumber = "201025930797"; // رقم الهاتف لتسجيل الدخول بالكود
+
+    if (phoneNumber) {
+        // تسجيل الدخول باستخدام الكود
+        sock = makeWASocket({
+            printQRInTerminal: false, // عدم طباعة رمز الاستجابة السريعة
+            auth: state,
+            logger: pino({ level: "silent" }),
+            version,
+            usePairingCode: true, // تفعيل تسجيل الدخول بالكود
+            phoneNumber: phoneNumber,
+        });
+
+    } else {
+        // تسجيل الدخول باستخدام رمز الاستجابة السريعة (QR code)
+        sock = makeWASocket({
+            printQRInTerminal: true,
+            auth: state,
+            logger: pino({ level: "silent" }),
+            version,
+            shouldIgnoreJid: (jid) => isJidBroadcast(jid),
+        });
+    }
+
 
     store.bind(sock.ev);
 
     sock.ev.on("connection.update", async (update) => {
         console.log("🔄  connection.update:", update);
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr, pairingCode } = update;
 
         if (connection === "open") {
             botNumber = sock.user.id.split(":")[0] + "@s.whatsapp.net"; // استخراج رقم البوت
@@ -190,6 +209,9 @@ const connectToWhatsApp = async () => {
         if (update.qr) {
             qr = update.qr;
             updateQR("qr");
+        }
+        if (pairingCode) {
+            console.log("كود تسجيل الدخول:", pairingCode);
         }
     });
 
