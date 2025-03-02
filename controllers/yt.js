@@ -3,11 +3,12 @@ const fs = require("fs");
 const path = require("path");
 const { sendErrorMessage, sendFormattedMessage } = require('./messageUtils');
 const { google } = require('googleapis');
+const ytdlExec = require('yt-dlp-exec');
 
 // Initialize Google YouTube API
 const youtube = google.youtube({
     version: 'v3',
-    auth: 'AIzaSyDGXCFF6aIa6NVXYwtnQ4aZSjtMNR8KLC0'
+    auth: 'AIzaSyDGXCFF6aIa6NVXYwtnQ4aZSjtMNR8KLC0' // 👈  ضع مفتاح الـ API الخاص بك هنا
 });
 
 const songsFolder = path.join(__dirname, '..', 'songs');
@@ -26,20 +27,18 @@ if (!fs.existsSync(videosFolder)) {
 
 /**
  * Format duration from ISO 8601 to readable format
- * @param {string} isoDuration - YouTube API duration format (PT1H32M15S)
- * @returns {string} Formatted duration (1:32:15)
  */
 const formatDuration = (isoDuration) => {
     if (!isoDuration) return "مش معروف";
-    
+
     const match = isoDuration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-    
+
     if (!match) return "مش معروف";
-    
+
     const hours = parseInt(match[1] || 0);
     const minutes = parseInt(match[2] || 0);
     const seconds = parseInt(match[3] || 0);
-    
+
     if (hours > 0) {
         return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
     } else {
@@ -49,9 +48,6 @@ const formatDuration = (isoDuration) => {
 
 /**
  * Search for videos using YouTube API
- * @param {string} query - Search query
- * @param {number} maxResults - Maximum number of results to return
- * @returns {Promise<Array>} Array of video details
  */
 const searchYouTube = async (query, maxResults = 5) => {
     try {
@@ -102,27 +98,71 @@ const searchYouTube = async (query, maxResults = 5) => {
 
 /**
  * Convert ISO 8601 duration to seconds
- * @param {string} isoDuration - Duration in ISO format
- * @returns {number} Duration in seconds
  */
 const convertIsoDurationToSeconds = (isoDuration) => {
     const match = isoDuration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-    
+
     if (!match) return 0;
-    
+
     const hours = parseInt(match[1] || 0);
     const minutes = parseInt(match[2] || 0);
     const seconds = parseInt(match[3] || 0);
-    
+
     return hours * 3600 + minutes * 60 + seconds;
 };
 
+async function downloadWithYtdlp(url, filePath, isAudioOnly = false) {
+    try {
+        await ytdlExec(url, {
+            output: filePath,
+            format: isAudioOnly ? 'bestaudio/best' : 'bestvideo+bestaudio/best', // تحديد التنسيق
+            mergeOutputFormat: isAudioOnly ? null : 'mp4', // دمج الصوت والفيديو إذا لم يكن صوت فقط
+        });
+        return true; // نجاح التنزيل
+    } catch (error) {
+        console.error('[yt-dlp-exec] Download error:', error);
+        return false; // فشل التنزيل
+    }
+}
+
+async function downloadWithYtdlCore(url, filePath, isAudioOnly = false) {
+    try {
+        const stream = ytdl(url, {
+            quality: isAudioOnly ? "highestaudio" : "highest",
+            filter: isAudioOnly ? "audioonly" : "videoandaudio",
+            requestOptions: {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    // يمكنك إضافة ترويسات أخرى هنا إذا لزم الأمر (مثل Cookie)، لكنها قد لا تكون فعالة على المدى الطويل.
+                }
+            }
+        });
+
+        const writeStream = fs.createWriteStream(filePath);
+        stream.pipe(writeStream);
+
+        return new Promise((resolve, reject) => {
+            writeStream.on("finish", () => resolve(true));
+            stream.on("error", (err) => {
+                console.error("[ytdl-core] Download error:", err);
+                if (fs.existsSync(filePath)) {
+                    fs.unlinkSync(filePath); // حذف الملف في حالة حدوث خطأ
+                }
+                reject(false);
+            });
+        });
+
+    } catch (error) {
+        console.error("[ytdl-core] Critical error:", error);
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+        }
+        return false;
+    }
+}
+
 /**
  * Download song from YouTube
- * @param {object} sock - WebSocket connection
- * @param {string} chatId - Chat ID
- * @param {object} message - Original message object
- * @param {string} query - Search query
  */
 const downloadSong = async (sock, chatId, message, query) => {
     if (!query || query.trim() === '') {
@@ -163,39 +203,17 @@ const downloadSong = async (sock, chatId, message, query) => {
             edit: statusMsg.key
         });
 
-        const stream = ytdl(song.url, {
-            quality: "highestaudio",
-            filter: "audioonly"
-        });
+        // Try yt-dlp-exec first
+        let success = await downloadWithYtdlp(song.url, filePath, true);
 
-        const writeStream = fs.createWriteStream(filePath);
-        stream.pipe(writeStream);
+        // If yt-dlp-exec fails, try ytdl-core
+        if (!success) {
+            console.log('[Song Downloader] yt-dlp-exec failed, trying ytdl-core...');
+            success = await downloadWithYtdlCore(song.url, filePath, true);
+        }
 
-        // Progress tracking
-        let downloadedBytes = 0;
-        let totalBytes = 0;
-        let lastProgressUpdate = Date.now();
 
-        stream.on('info', (info, format) => {
-            totalBytes = parseInt(format.contentLength, 10) || 0;
-        });
-
-        stream.on('data', (chunk) => {
-            downloadedBytes += chunk.length;
-            
-            // Update progress every 2 seconds to avoid too many messages
-            const now = Date.now();
-            if (now - lastProgressUpdate > 2000 && totalBytes > 0) {
-                lastProgressUpdate = now;
-                const progress = Math.floor((downloadedBytes / totalBytes) * 100);
-                sock.sendMessage(chatId, {
-                    text: `*لقيت الأغنية ✅*\n\n*🎵 ${songTitle}*\n*👤 ${artistName}*\n*⏱️ ${songDuration}*\n\n*جاري التحميل... ${progress}% ⏳*`,
-                    edit: statusMsg.key
-                }).catch(err => console.error('[Song Downloader] Error updating progress:', err));
-            }
-        });
-
-        writeStream.on("finish", async () => {
+        if (success) {
             await sock.sendMessage(chatId, {
                 text: `*تم التحميل بنجاح 🎉*\n\n*🎵 ${songTitle}*\n*👤 ${artistName}*\n*⏱️ ${songDuration}*\n\n*جاري الإرسال... 🚀*`,
                 edit: statusMsg.key
@@ -239,19 +257,12 @@ const downloadSong = async (sock, chatId, message, query) => {
                     fs.unlinkSync(filePath);
                 }
             }
-        });
-
-        stream.on("error", async (err) => {
-            console.error("[Song Downloader] Download error:", err);
-            await sock.sendMessage(chatId, {
-                text: "*⚠️ حصل مشكلة وأنا بنزل الأغنية 😔*\n*ممكن المحتوى محمي أو مش متاح للتنزيل 🚫*\n\n*جرب أغنية تانية أو نفس الأغنية من مصدر تاني 🔍*",
-                edit: statusMsg.key
-            });
-
-            if (fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
-            }
-        });
+        } else {
+          await sock.sendMessage(chatId, {
+              text: "*فشلت كل محاولات التحميل 😞*\n*ممكن يكون المحتوى محمي أو فيه مشكلة في الشبكة 🌐*\n*جرب أغنية تانية أو في وقت تاني ⏰*",
+              edit: statusMsg.key
+          });
+      }
 
     } catch (error) {
         console.error("[Song Downloader] Critical error:", error);
@@ -264,10 +275,6 @@ const downloadSong = async (sock, chatId, message, query) => {
 
 /**
  * Download video from YouTube
- * @param {object} sock - WebSocket connection
- * @param {string} chatId - Chat ID
- * @param {object} message - Original message object
- * @param {string} query - Search query
  */
 const downloadVideo = async (sock, chatId, message, query) => {
     if (!query || query.trim() === '') {
@@ -297,7 +304,7 @@ const downloadVideo = async (sock, chatId, message, query) => {
         const viewCount = video.views ? new Intl.NumberFormat('ar-EG').format(video.views) : "غير معروف";
 
         // Check if video is too long (10 minutes max)
-        if (video.duration.seconds > 600) { 
+        if (video.duration.seconds > 600) {
             await sock.sendMessage(chatId, {
                 text: `*⚠️ الفيديو ده طويل جدًا (${videoDuration}) ⏱️*\n*ممكن تجرب فيديو أقصر من 10 دقايق 🙏*`,
                 edit: statusMsg.key
@@ -317,39 +324,16 @@ const downloadVideo = async (sock, chatId, message, query) => {
             edit: statusMsg.key
         });
 
-        const stream = ytdl(video.url, {
-            quality: "highest",
-            filter: "videoandaudio"
-        });
+        // Try yt-dlp-exec first
+        let success = await downloadWithYtdlp(video.url, filePath);
 
-        const writeStream = fs.createWriteStream(filePath);
-        stream.pipe(writeStream);
-        
-        // Progress tracking
-        let downloadedBytes = 0;
-        let totalBytes = 0;
-        let lastProgressUpdate = Date.now();
+        // If yt-dlp-exec fails, try ytdl-core
+        if (!success) {
+            console.log('[Video Downloader] yt-dlp-exec failed, trying ytdl-core...');
+            success = await downloadWithYtdlCore(video.url, filePath);
+        }
 
-        stream.on('info', (info, format) => {
-            totalBytes = parseInt(format.contentLength, 10) || 0;
-        });
-
-        stream.on('data', (chunk) => {
-            downloadedBytes += chunk.length;
-            
-            // Update progress every 3 seconds to avoid too many messages
-            const now = Date.now();
-            if (now - lastProgressUpdate > 3000 && totalBytes > 0) {
-                lastProgressUpdate = now;
-                const progress = Math.floor((downloadedBytes / totalBytes) * 100);
-                sock.sendMessage(chatId, {
-                    text: `*لقيت الفيديو ✅*\n\n*🎬 ${videoTitle}*\n*📺 ${channelName}*\n*⏱️ ${videoDuration}*\n\n*جاري التحميل... ${progress}% ⏳*`,
-                    edit: statusMsg.key
-                }).catch(err => console.error('[Video Downloader] Error updating progress:', err));
-            }
-        });
-
-        writeStream.on("finish", async () => {
+        if (success) {
             await sock.sendMessage(chatId, {
                 text: `*تم التحميل بنجاح 🎉*\n\n*🎬 ${videoTitle}*\n*📺 ${channelName}*\n*⏱️ ${videoDuration}*\n\n*جاري الإرسال... 🚀*`,
                 edit: statusMsg.key
@@ -392,19 +376,12 @@ const downloadVideo = async (sock, chatId, message, query) => {
                     fs.unlinkSync(filePath);
                 }
             }
-        });
-
-        stream.on("error", async (err) => {
-            console.error("[Video Downloader] Download error:", err);
+        } else {
             await sock.sendMessage(chatId, {
-                text: "*⚠️ حصل مشكلة وأنا بنزل الفيديو 😔*\n*ممكن المحتوى محمي أو مش متاح للتنزيل 🚫*\n\n*جرب فيديو تاني أو نفس الفيديو من مصدر تاني 🔍*",
+                text: "*فشلت كل محاولات التحميل 😞*\n*ممكن يكون المحتوى محمي أو فيه مشكلة في الشبكة 🌐*\n*جرب فيديو تاني أو في وقت تاني ⏰*",
                 edit: statusMsg.key
             });
-
-            if (fs.existsSync(filePath)) {
-                fs.unlinkSync(filePath);
-            }
-        });
+        }
 
     } catch (error) {
         console.error("[Video Downloader] Critical error:", error);
@@ -417,11 +394,6 @@ const downloadVideo = async (sock, chatId, message, query) => {
 
 /**
  * Search YouTube and return results
- * @param {object} sock - WebSocket connection
- * @param {string} chatId - Chat ID
- * @param {object} message - Original message object
- * @param {string} query - Search query
- * @param {number} maxResults - Maximum number of results to return
  */
 const searchAndDisplay = async (sock, chatId, message, query, maxResults = 5) => {
     if (!query || query.trim() === '') {
