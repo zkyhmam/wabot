@@ -1,4 +1,3 @@
-// whatsappController.js
 const {
     default: makeWASocket,
     DisconnectReason,
@@ -24,7 +23,8 @@ const helpController = require("./help.js");
 const { sendErrorMessage, sendFormattedMessage } = require("./messageUtils");
 const { sendSecretMessage, handleReply } = require('./secretMessages.js');
 const { adminCommands, ensureDirectoriesExist, loadSettings, setBotNumber } = require('./admin.js');
-const { handleImageMessage } = require('./vision.js'); // Import the new image handler
+const { handleImageMessage, initialize, shutdown } = require('./vision.js'); // Import from vision.js
+
 
 // تعريف المتغيرات العالمية
 let autoReply = {};
@@ -42,10 +42,10 @@ const logErrorToFile = (error, command, message) => {
     fs.appendFileSync(logFile, logEntry);
 };
 
-// دالة لمنع البوت من معالجة رسائله الخاصة في vision.js
-const shouldProcessImage = (message) => {
-    return !(message.key.remoteJid === 'status@broadcast' || message.key.fromMe);
-};
+// دالة لمنع البوت من معالجة رسائله الخاصة في vision.js (أصبحت غير ضرورية هنا)
+// const shouldProcessImage = (message) => {
+//     return !(message.key.remoteJid === 'status@broadcast' || message.key.fromMe);
+// };  <--  تمت إزالتها
 
 
 // تعريف الأوامر العامة وأوامر الأدمن
@@ -151,6 +151,12 @@ const connectToWhatsApp = async () => {
 
     await ensureDirectoriesExist(); // إنشاء المجلدات الضرورية من admin.js
     await loadSettings(); // تحميل إعدادات الأدمن
+    const isVisionInitialized = await initialize(); // Initialize vision.js
+    if (!isVisionInitialized) {
+      console.error("❌ Failed to initialize vision.js. Image processing will not work.");
+      // Consider what to do here.  Exit?  Continue without image processing?
+    }
+
 
     const { state, saveCreds } = await useMultiFileAuthState("baileys_auth_info");
     console.log("➡️  connectToWhatsApp: تم تحميل/إنشاء بيانات المصادقة");
@@ -181,10 +187,14 @@ const connectToWhatsApp = async () => {
         if (connection === "close") {
             const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             console.log("❌  connection.update: تم إغلاق الاتصال بسبب:", reason);
+            if (reason === DisconnectReason.loggedOut) {
+              deleteAuthData();
+              process.exit(0); // Exit completely on logout
+            }
+
             switch (reason) {
                 case DisconnectReason.badSession:
                 case DisconnectReason.connectionReplaced:
-                case DisconnectReason.loggedOut:
                     deleteAuthData();
                     connectToWhatsApp();
                     break;
@@ -244,10 +254,10 @@ const connectToWhatsApp = async () => {
 
       console.log(`📩  messages.upsert: رسالة جديدة من ${noWa}، الرسالة: ${pesan}`);
 
-      // معالجة الصور (إذا كانت الرسالة ليست من البوت)
-      if (shouldProcessImage(message)) {
-          await handleImageMessage(sock, message);
-      }
+
+        // استدعاء handleImageMessage (لا حاجة لفحص shouldProcessImage هنا)
+        await handleImageMessage(sock, message);
+
 
       const prefixRegex = /^[\/.]|#/;
       if (prefixRegex.test(pesan.trim().charAt(0))) {
@@ -264,6 +274,31 @@ const connectToWhatsApp = async () => {
           await sock.sendMessage(botNumber, { text: "أنا برد على نفسي! 🤖" });
       }
   });
+
+    // Handle shutdown (e.g., on SIGINT)
+    process.on('SIGINT', async () => {
+        console.log('Received SIGINT, shutting down gracefully...');
+        await shutdown();
+        process.exit(0);
+    });
+
+    process.on('SIGTERM', async () => {
+        console.log('Received SIGTERM, shutting down gracefully...');
+        await shutdown();
+        process.exit(0);
+    });
+
+    // Unhandled Rejections and Exceptions
+    process.on('unhandledRejection', (reason, promise) => {
+        console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+        // Application specific logging, throwing an error, or other logic here
+    });
+
+    process.on('uncaughtException', (error) => {
+        console.error('Uncaught Exception:', error);
+        // Application-specific logging, throwing an error, or other logic here
+        process.exit(1); // Exit with an error code
+    });
 };
 
 async function handleCommand(sock, noWa, message, command, query, args, handler) {
