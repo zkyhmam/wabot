@@ -69,16 +69,13 @@ const searchYouTube = async (query, maxResults = 5) => {
             return [];
         }
 
-        // Get video IDs
         const videoIds = response.data.items.map(item => item.id.videoId);
 
-        // Get detailed info including duration, statistics
         const videoDetails = await youtube.videos.list({
             part: 'contentDetails,snippet,statistics',
             id: videoIds.join(',')
         });
 
-        // Format the results
         return videoDetails.data.items.map(video => ({
             id: video.id,
             url: `https://www.youtube.com/watch?v=${video.id}`,
@@ -239,7 +236,6 @@ const downloadSong = async (sock, chatId, message, query) => {
         const writeStream = fs.createWriteStream(filePath);
         stream.pipe(writeStream);
 
-        // Progress tracking
         let downloadedBytes = 0;
         let totalBytes = 0;
         let lastProgressUpdate = Date.now();
@@ -548,7 +544,11 @@ const searchAndDisplay = async (sock, chatId, message, query, maxResults = 3) =>
             edit: statusMsg.key
         });
 
+        console.log("[YouTube Search] Starting to process search results with buttons...");
+
         for (const video of searchResults) {
+            console.log(`[YouTube Search] Processing video: ${video.title} (ID: ${video.id})`);
+
             const viewsFormatted = new Intl.NumberFormat('ar-EG').format(video.views);
             const likesFormatted = new Intl.NumberFormat('ar-EG').format(video.likes);
             const commentsFormatted = new Intl.NumberFormat('ar-EG').format(video.comments);
@@ -564,10 +564,13 @@ const searchAndDisplay = async (sock, chatId, message, query, maxResults = 3) =>
                             `*🎵 لتحميل صوت فقط:* \`.song ${video.title}\``;
             
             try {
+                console.log(`[YouTube Search] Downloading thumbnail for video: ${video.id}`);
                 const thumbnailId = Date.now() + Math.floor(Math.random() * 1000);
                 const tempThumbPath = path.join(thumbnailsFolder, `temp_thumb_${thumbnailId}.jpg`);
                 await downloadThumbnail(video.thumbnail, tempThumbPath);
-                
+                console.log(`[YouTube Search] Thumbnail downloaded successfully: ${tempThumbPath}`);
+
+                console.log(`[YouTube Search] Preparing buttons for video: ${video.id}`);
                 const buttons = [
                     {
                         buttonId: `download_video_${video.id}`,
@@ -580,7 +583,9 @@ const searchAndDisplay = async (sock, chatId, message, query, maxResults = 3) =>
                         type: 1
                     }
                 ];
-                
+                console.log(`[YouTube Search] Buttons prepared: ${JSON.stringify(buttons)}`);
+
+                console.log(`[YouTube Search] Sending message with buttons for video: ${video.id}`);
                 await sock.sendMessage(
                     chatId,
                     {
@@ -592,22 +597,28 @@ const searchAndDisplay = async (sock, chatId, message, query, maxResults = 3) =>
                     },
                     { quoted: message }
                 );
-                
+                console.log(`[YouTube Search] Message with buttons sent successfully for video: ${video.id}`);
+
                 fs.unlink(tempThumbPath, (err) => {
                     if (err) console.error(`[YouTube Search] Error deleting temp thumbnail: ${err}`);
+                    else console.log(`[YouTube Search] Temp thumbnail deleted: ${tempThumbPath}`);
                 });
                 
                 await new Promise(resolve => setTimeout(resolve, 500));
                 
             } catch (imgError) {
-                console.error("[YouTube Search] Error with thumbnail or buttons:", imgError);
+                console.error(`[YouTube Search] Error with thumbnail or buttons for video ${video.id}:`, imgError);
+                console.log(`[YouTube Search] Falling back to text-only message for video: ${video.id}`);
                 await sock.sendMessage(chatId, { text: caption }, { quoted: message });
+                console.log(`[YouTube Search] Text-only message sent for video: ${video.id}`);
             }
         }
 
+        console.log("[YouTube Search] Sending summary message...");
         await sock.sendMessage(chatId, {
             text: `*لتحميل فيديو: \`.video ${query}\`*\n*لتحميل أغنية: \`.song ${query}\`*\n\n*لمزيد من نتائج البحث اكتب:* \`.yts ${query} more\``
         });
+        console.log("[YouTube Search] Summary message sent successfully.");
 
     } catch (error) {
         console.error("[YouTube Search] Critical error:", error);
