@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const { google } = require('googleapis');
 const { sendFormattedMessage, sendErrorMessage } = require('./messageUtils'); // Assuming you have this
+const { downloadContentFromMessage } = require('@whiskeysockets/baileys'); // <-- استيراد الدالة
+
 
 // Initialize Google Cloud Vision API
 const vision = google.vision({
@@ -70,16 +72,16 @@ const processImage = async (sock, chatId, imagePath, quotedMessage) => {
             analysisText += "📝 *النص الموجود في الصورة:*\n";
             analysisText += `"${texts[0].description}"\n\n`; // texts[0] usually contains the full detected text
         }
-		
-		if (imageProperties && imageProperties.dominantColors && imageProperties.dominantColors.colors) {
-			const colors = imageProperties.dominantColors.colors;
-			analysisText += "🎨 *الألوان الرئيسية:*\n";
-			colors.slice(0, 3).forEach(color => { // Limit to top 3 colors for brevity
-				const rgb = color.color;
-				analysisText += `• R:${rgb.red}, G:${rgb.green}, B:${rgb.blue} (النسبة: ${(color.pixelFraction * 100).toFixed(2)}%)\n`;
-			});
-			analysisText += "\n";
-		}
+
+        if (imageProperties && imageProperties.dominantColors && imageProperties.dominantColors.colors) {
+            const colors = imageProperties.dominantColors.colors;
+            analysisText += "🎨 *الألوان الرئيسية:*\n";
+            colors.slice(0, 3).forEach(color => { // Limit to top 3 colors for brevity
+                const rgb = color.color;
+                analysisText += `• R:${rgb.red}, G:${rgb.green}, B:${rgb.blue} (النسبة: ${(color.pixelFraction * 100).toFixed(2)}%)\n`;
+            });
+            analysisText += "\n";
+        }
 
         if (webEntities && webEntities.length > 0) {
             analysisText += "🌐 *نتائج الويب ذات الصلة:* \n";
@@ -138,31 +140,31 @@ const handleImageMessage = async (sock, message) => {
     const chatId = message.key.remoteJid;
     const quotedMessage = message; // Use the entire message as the quoted message
 
-	if (message.message?.imageMessage || message.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage) {
-	    // Check for direct image message OR quoted image message
-	    const imageMessage = message.message.imageMessage || message.message.extendedTextMessage.contextInfo.quotedMessage.imageMessage;
+    if (message.message?.imageMessage || message.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage) {
+        // Check for direct image message OR quoted image message
+        const imageMessage = message.message.imageMessage || message.message.extendedTextMessage.contextInfo.quotedMessage.imageMessage;
 
-	    // Download the image
-	    const stream = await downloadContentFromMessage(imageMessage, 'image'); // Use Baileys function
-	    const buffer = Buffer.from([]);
-	    for await (const chunk of stream) {
-	        buffer = Buffer.concat([buffer, chunk]);
-	    }
+        // Download the image
+        const stream = await downloadContentFromMessage(imageMessage, 'image'); // Use Baileys function
+        const buffer = Buffer.from([]);
+        for await (const chunk of stream) {
+            buffer = Buffer.concat([buffer, chunk]);
+        }
 
-	    const imageId = Date.now() + Math.floor(Math.random() * 1000); // Unique ID
-	    const tempImagePath = path.join(__dirname, '..', 'temp', `image_${imageId}.jpg`); // Save to a 'temp' folder
+        const imageId = Date.now() + Math.floor(Math.random() * 1000); // Unique ID
+        const tempImagePath = path.join(__dirname, '..', 'temp', `image_${imageId}.jpg`); // Save to a 'temp' folder
 
-	    // Ensure the 'temp' directory exists
-	    const tempDir = path.join(__dirname, '..', 'temp');
-	    if (!fs.existsSync(tempDir)) {
-	        fs.mkdirSync(tempDir, { recursive: true });
-	    }
+        // Ensure the 'temp' directory exists
+        const tempDir = path.join(__dirname, '..', 'temp');
+        if (!fs.existsSync(tempDir)) {
+            fs.mkdirSync(tempDir, { recursive: true });
+        }
 
-	    fs.writeFileSync(tempImagePath, buffer); // Save the image
+        fs.writeFileSync(tempImagePath, buffer); // Save the image
 
-	    // Process the downloaded image
-	    await processImage(sock, chatId, tempImagePath, quotedMessage);
-	}
+        // Process the downloaded image
+        await processImage(sock, chatId, tempImagePath, quotedMessage);
+    }
 };
 
 
