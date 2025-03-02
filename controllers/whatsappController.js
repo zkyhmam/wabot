@@ -6,7 +6,7 @@ const {
     makeInMemoryStore,
     useMultiFileAuthState,
     isJidGroup,
-    getDevice, // استيراد getDevice
+    generateRegistrationId, // استيراد getDevice
     generateWAMessage,
 
 } = require("@whiskeysockets/baileys");
@@ -156,9 +156,23 @@ const connectToWhatsApp = async () => {
     if (phoneNumber) {
         // تسجيل الدخول باستخدام الكود
 
-        // إنشاء رسالة الاقتران *قبل* إنشاء الاتصال
-        const code = await getDevice(phoneNumber);
+        // إنشاء رسالة اقتران وهمية *قبل* إنشاء الاتصال
+        const registrationId = generateRegistrationId();
+        const msg = await generateWAMessage(
+            phoneNumber + "@s.whatsapp.net", // الرقم مع النطاق
+            {
+                registrationId: registrationId,
+            },
+            {
+                userJid: phoneNumber + "@s.whatsapp.net",
+                logger: pino({ level: "silent" }),
+            }
+        );
+
+        // استخراج كود الاقتران من الرسالة
+        const code = msg.key.id;
         console.log("كود تسجيل الدخول:", code);
+
 
 
         sock = makeWASocket({
@@ -217,9 +231,7 @@ const connectToWhatsApp = async () => {
             qr = update.qr; // الآن qr يشير إلى المتغير العام القابل للتعديل
             updateQR("qr");
         }
-        //  if (update.pairingCode) { //  pairingCode لم يعد ضروريا هنا
-        //      console.log("كود تسجيل الدخول:", update.pairingCode); //  pairingCode لم يعد ضروريا هنا
-        //  }
+
     });
 
     sock.ev.on("creds.update", saveCreds);
