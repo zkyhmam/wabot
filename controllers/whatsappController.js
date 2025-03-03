@@ -23,8 +23,7 @@ const helpController = require("./help.js");
 const { sendErrorMessage, sendFormattedMessage } = require("./messageUtils");
 const { sendSecretMessage, handleReply } = require('./secretMessages.js');
 const { adminCommands, ensureDirectoriesExist, loadSettings, setBotNumber } = require('./admin.js');
-const { handleImageMessage, initialize, shutdown } = require('./vision.js'); // Import from vision.js
-
+// تمت إزالة الاستيراد من vision.js
 
 // تعريف المتغيرات العالمية
 let autoReply = {};
@@ -41,12 +40,6 @@ const logErrorToFile = (error, command, message) => {
     const logEntry = `[${new Date().toISOString()}] Command: ${command || 'Unknown'}, Error: ${error.message}, Message: ${JSON.stringify(message)}\n`;
     fs.appendFileSync(logFile, logEntry);
 };
-
-// دالة لمنع البوت من معالجة رسائله الخاصة في vision.js (أصبحت غير ضرورية هنا)
-// const shouldProcessImage = (message) => {
-//     return !(message.key.remoteJid === 'status@broadcast' || message.key.fromMe);
-// };  <--  تمت إزالتها
-
 
 // تعريف الأوامر العامة وأوامر الأدمن
 const commandRoutes = {
@@ -151,11 +144,7 @@ const connectToWhatsApp = async () => {
 
     await ensureDirectoriesExist(); // إنشاء المجلدات الضرورية من admin.js
     await loadSettings(); // تحميل إعدادات الأدمن
-    const isVisionInitialized = await initialize(); // Initialize vision.js
-    if (!isVisionInitialized) {
-      console.error("❌ Failed to initialize vision.js. Image processing will not work.");
-      // Consider what to do here.  Exit?  Continue without image processing?
-    }
+    // تمت إزالة استدعاء initialize من vision.js
 
 
     const { state, saveCreds } = await useMultiFileAuthState("baileys_auth_info");
@@ -254,10 +243,7 @@ const connectToWhatsApp = async () => {
 
       console.log(`📩  messages.upsert: رسالة جديدة من ${noWa}، الرسالة: ${pesan}`);
 
-
-        // استدعاء handleImageMessage (لا حاجة لفحص shouldProcessImage هنا)
-        await handleImageMessage(sock, message);
-
+      // تمت إزالة استدعاء handleImageMessage
 
       const prefixRegex = /^[\/.]|#/;
       if (prefixRegex.test(pesan.trim().charAt(0))) {
@@ -278,13 +264,13 @@ const connectToWhatsApp = async () => {
     // Handle shutdown (e.g., on SIGINT)
     process.on('SIGINT', async () => {
         console.log('Received SIGINT, shutting down gracefully...');
-        await shutdown();
+        // تمت إزالة استدعاء shutdown من vision.js
         process.exit(0);
     });
 
     process.on('SIGTERM', async () => {
         console.log('Received SIGTERM, shutting down gracefully...');
-        await shutdown();
+         // تمت إزالة استدعاء shutdown من vision.js
         process.exit(0);
     });
 
