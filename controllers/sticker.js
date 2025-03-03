@@ -227,8 +227,6 @@ const takeCommand = async (sock, chatId, message, sender) => {
     }
 };
 
-
-
 const createAndSendSticker = async (sock, chatId, mediaBuffer, mediaMessage, packInfo) => {
     const tmpDir = path.join(process.cwd(), "tmp");
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
@@ -238,133 +236,210 @@ const createAndSendSticker = async (sock, chatId, mediaBuffer, mediaMessage, pac
 
     fs.writeFileSync(tempInput, mediaBuffer);
 
-    // تحديد ما إذا كان الملف متحرك (GIF أو فيديو أو ستيكر متحرك)
-    const isAnimated = mediaMessage.mimetype?.includes("gif") || 
-                       mediaMessage.seconds > 0 || 
-                       mediaMessage.mimetype?.includes("webp") && 
-                       (mediaMessage.isAnimated || mediaBuffer.toString().includes("ANIM") || mediaBuffer.toString().includes("ANMF"));
+    try {
+        // تحديد ما إذا كان الملف متحرك (GIF أو فيديو أو ستيكر متحرك)
+        const isAnimated = mediaMessage.mimetype?.includes("gif") || 
+                          mediaMessage.seconds > 0 || 
+                          (mediaMessage.mimetype?.includes("webp") && 
+                          (mediaMessage.isAnimated || 
+                           (Buffer.isBuffer(mediaBuffer) && 
+                            (mediaBuffer.includes(Buffer.from("ANIM")) || 
+                             mediaBuffer.includes(Buffer.from("ANMF"))))));
 
-    // التعامل مع الملفات المتحركة
-    let ffmpegCommand;
-    
-    if (isAnimated) {
-        // معالجة الستيكر المتحرك بأمر مختلف
-        if (mediaMessage.mimetype?.includes("webp") && (mediaBuffer.toString().includes("ANIM") || mediaBuffer.toString().includes("ANMF"))) {
-            // أولاً نحول الملف المتحرك إلى GIF ثم نحوله مرة أخرى إلى WebP
+        // التعامل مع الملصقات المتحركة
+        if (isAnimated) {
+            if (mediaMessage.mimetype?.includes("webp")) {
+                // للملصقات المتحركة WebP، نستخدم أداة WebPMux مباشرة
+                try {
+                    // نسخ الملف الأصلي إلى ملف الإخراج مؤقتًا
+                    fs.copyFileSync(tempInput, tempOutput);
+                    
+                    // إضافة metadata فقط للملصق المتحرك
+                    const img = new webp.Image();
+                    await img.load(fs.readFileSync(tempOutput));
+                    
+                    // إضافة معلومات EXIF
+                    const json = {
+                        "sticker-pack-id": crypto.randomBytes(32).toString("hex"),
+                        "sticker-pack-name": packInfo.packName,
+                        "sticker-pack-publisher": packInfo.packPublisher,
+                        "emojis": (process.env.STICKER_EMOJIS || "🇪🇬,😎,😂").split(",")
+                    };
+                    
+                    const exifAttr = Buffer.from([0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x41, 0x57, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00]);
+                    const jsonBuffer = Buffer.from(JSON.stringify(json), "utf8");
+                    const exif = Buffer.concat([exifAttr, jsonBuffer]);
+                    exif.writeUIntLE(jsonBuffer.length, 14, 4);
+                    
+                    img.exif = exif;
+                    const finalBuffer = await img.save(null);
+                    
+                    // إرسال الملصق
+                    await sock.sendMessage(chatId, {
+                        sticker: finalBuffer,
+                        contextInfo: {
+                            forwardingScore: 999,
+                            isForwarded: true,
+                            externalAdReply: {
+                                title: process.env.EXTERNAL_AD_TITLE || "🤖 Zaky AI 🤖",
+                                body: process.env.EXTERNAL_AD_BODY || "للمساعدة أو الاستفسارات",
+                                mediaType: Number(process.env.EXTERNAL_AD_MEDIA_TYPE) || 2,
+                                thumbnail: fs.readFileSync(path.join(process.cwd(), process.env.EXTERNAL_AD_THUMBNAIL_PATH || "./assets/zakyai.jpg")),
+                                mediaUrl: process.env.EXTERNAL_AD_MEDIA_URL || "https://wa.me/201280779419",
+                                sourceUrl: process.env.EXTERNAL_AD_SOURCE_URL || "https://wa.me/201280779419"
+                            }
+                        }
+                    });
+                    
+                    // تنظيف الملفات
+                    if (fs.existsSync(tempInput)) fs.unlinkSync(tempInput);
+                    if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
+                    
+                    return; // الخروج بعد النجاح
+                } catch (error) {
+                    console.error("فشل في معالجة ملصق WebP متحرك، جار المحاولة بطريقة بديلة:", error);
+                    // سنتابع مع الطريقة البديلة إذا فشلت هذه الطريقة
+                }
+            }
+            
+            // استخدام FFmpeg للتحويل من فيديو أو GIF إلى WebP متحرك
             const tempGif = path.join(tmpDir, `temp_gif_${Date.now()}.gif`);
+            let ffmpegCommand;
             
-            // تحويل WebP المتحرك إلى GIF
-            await new Promise((resolve, reject) => {
-                exec(`ffmpeg -i "${tempInput}" -vf "scale=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:force_original_aspect_ratio=decrease" "${tempGif}"`, (error) => {
-                    if (error) {
-                        console.error("خطأ في تحويل WebP إلى GIF:", error);
-                        return reject(error);
-                    }
-                    resolve();
+            // إذا كان المدخل فيديو، نحوله مباشرة إلى WebP
+            if (mediaMessage.mimetype?.includes("video") || mediaMessage.seconds > 0) {
+                ffmpegCommand = `ffmpeg -i "${tempInput}" -vf "fps=${process.env.STICKER_FPS || 15},scale=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:force_original_aspect_ratio=decrease,pad=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:(ow-iw)/2:(oh-ih)/2:color=#00000000" -c:v libwebp -lossless 0 -compression_level ${process.env.STICKER_COMPRESSION_LEVEL || 6} -q:v ${process.env.STICKER_QUALITY || 50} -loop 0 -preset picture -an -vsync 0 "${tempOutput}"`;
+            } 
+            // إذا كان GIF أو WebP متحرك، نحاول تحويله إلى GIF ثم إلى WebP
+            else {
+                // أولاً: نحاول استخراج الإطارات (frames) مباشرة
+                ffmpegCommand = `ffmpeg -i "${tempInput}" -vf "fps=${process.env.STICKER_FPS || 15},scale=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:force_original_aspect_ratio=decrease,pad=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:(ow-iw)/2:(oh-ih)/2:color=#00000000" -c:v libwebp -lossless 0 -compression_level ${process.env.STICKER_COMPRESSION_LEVEL || 6} -q:v ${process.env.STICKER_QUALITY || 50} -loop 0 -preset picture -an -vsync 0 "${tempOutput}"`;
+            }
+            
+            try {
+                await new Promise((resolve, reject) => {
+                    exec(ffmpegCommand, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+                        if (error) {
+                            console.error("خطأ في تنفيذ FFmpeg:", error);
+                            console.log("stderr:", stderr);
+                            return reject(error);
+                        }
+                        resolve();
+                    });
                 });
-            });
-            
-            // تحويل GIF إلى WebP مرة أخرى مع الإعدادات المناسبة
-            ffmpegCommand = `ffmpeg -i "${tempGif}" -vf "scale=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:force_original_aspect_ratio=decrease,fps=${process.env.STICKER_FPS || 15},pad=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:(ow-iw)/2:(oh-ih)/2:color=#00000000" -c:v libwebp -lossless 0 -compression_level ${process.env.STICKER_COMPRESSION_LEVEL || 6} -q:v ${process.env.STICKER_QUALITY || 50} -loop 0 -preset picture -an -vsync 0 "${tempOutput}"`;
-            
-            await new Promise((resolve, reject) => {
-                exec(ffmpegCommand, (error) => {
-                    if (error) {
-                        console.error("خطأ في تحويل GIF إلى WebP:", error);
-                        return reject(error);
+                
+                // في حالة الفشل أو عدم وجود الملف المُخرج
+                if (!fs.existsSync(tempOutput)) {
+                    throw new Error("لم يتم إنشاء ملف الإخراج");
+                }
+            } catch (error) {
+                console.error("فشل في تنفيذ الأمر الأول، جار تجربة طريقة بديلة...", error);
+                
+                // الطريقة البديلة: تحويل المدخل إلى GIF ثم إلى WebP
+                try {
+                    await new Promise((resolve, reject) => {
+                        exec(`ffmpeg -i "${tempInput}" -vf "fps=${process.env.STICKER_FPS || 15},scale=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:force_original_aspect_ratio=decrease" "${tempGif}"`, { maxBuffer: 10 * 1024 * 1024 }, (error) => {
+                            if (error) {
+                                console.error("خطأ في تحويل الملف إلى GIF:", error);
+                                return reject(error);
+                            }
+                            resolve();
+                        });
+                    });
+                    
+                    await new Promise((resolve, reject) => {
+                        exec(`ffmpeg -i "${tempGif}" -vf "pad=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:(ow-iw)/2:(oh-ih)/2:color=#00000000" -c:v libwebp -lossless 0 -compression_level ${process.env.STICKER_COMPRESSION_LEVEL || 6} -q:v ${process.env.STICKER_QUALITY || 50} -loop 0 -preset picture -an -vsync 0 "${tempOutput}"`, { maxBuffer: 10 * 1024 * 1024 }, (error) => {
+                            if (error) {
+                                console.error("خطأ في تحويل GIF إلى WebP:", error);
+                                return reject(error);
+                            }
+                            resolve();
+                        });
+                    });
+                    
+                    // حذف ملف GIF المؤقت
+                    if (fs.existsSync(tempGif)) {
+                        fs.unlinkSync(tempGif);
                     }
-                    resolve();
-                });
-            });
-            
-            // حذف ملف GIF المؤقت
-            if (fs.existsSync(tempGif)) {
-                fs.unlinkSync(tempGif);
+                } catch (error) {
+                    console.error("فشلت جميع الطرق البديلة:", error);
+                    throw error; // رمي الخطأ للتعامل معه في الـ catch الخارجي
+                }
             }
         } else {
-            // معالجة فيديو أو GIF
-            ffmpegCommand = `ffmpeg -i "${tempInput}" -vf "scale=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:force_original_aspect_ratio=decrease,fps=${process.env.STICKER_FPS || 15},pad=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:(ow-iw)/2:(oh-ih)/2:color=#00000000" -c:v libwebp -lossless 0 -compression_level ${process.env.STICKER_COMPRESSION_LEVEL || 6} -q:v ${process.env.STICKER_QUALITY || 50} -loop 0 -preset picture -an -vsync 0 "${tempOutput}"`;
+            // معالجة الصور الثابتة
+            const ffmpegCommand = `ffmpeg -i "${tempInput}" -vf "scale=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:force_original_aspect_ratio=decrease,format=rgba,pad=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:(ow-iw)/2:(oh-ih)/2:color=#00000000" -c:v libwebp -preset default -loop 0 -q:v ${process.env.STICKER_QUALITY || 50} -compression_level ${process.env.STICKER_COMPRESSION_LEVEL || 6} "${tempOutput}"`;
             
             await new Promise((resolve, reject) => {
-                exec(ffmpegCommand, (error) => {
+                exec(ffmpegCommand, { maxBuffer: 10 * 1024 * 1024 }, (error) => {
                     if (error) {
-                        console.error("خطأ في تحويل فيديو/GIF إلى WebP:", error);
+                        console.error("خطأ في تحويل الصورة إلى WebP:", error);
                         return reject(error);
                     }
                     resolve();
                 });
             });
         }
-    } else {
-        // معالجة الصور الثابتة
-        ffmpegCommand = `ffmpeg -i "${tempInput}" -vf "scale=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:force_original_aspect_ratio=decrease,format=rgba,pad=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:(ow-iw)/2:(oh-ih)/2:color=#00000000" -c:v libwebp -preset default -loop 0 -q:v ${process.env.STICKER_QUALITY || 50} -compression_level ${process.env.STICKER_COMPRESSION_LEVEL || 6} "${tempOutput}"`;
-        
-        await new Promise((resolve, reject) => {
-            exec(ffmpegCommand, (error) => {
-                if (error) {
-                    console.error("خطأ في تحويل الصورة إلى WebP:", error);
-                    return reject(error);
+
+        // إذا لم يتم إنشاء الملف بنجاح، نرسل رسالة خطأ ونخرج
+        if (!fs.existsSync(tempOutput)) {
+            await sendErrorMessage(sock, chatId, "❌ حدث خطأ أثناء معالجة الملصق. يرجى المحاولة مرة أخرى.");
+            if (fs.existsSync(tempInput)) fs.unlinkSync(tempInput);
+            return;
+        }
+
+        // إضافة معلومات الملصق (EXIF)
+        try {
+            const webpBuffer = fs.readFileSync(tempOutput);
+            const img = new webp.Image();
+            await img.load(webpBuffer);
+
+            const json = {
+                "sticker-pack-id": crypto.randomBytes(32).toString("hex"),
+                "sticker-pack-name": packInfo.packName,
+                "sticker-pack-publisher": packInfo.packPublisher,
+                "emojis": (process.env.STICKER_EMOJIS || "🇪🇬,😎,😂").split(",")
+            };
+
+            const exifAttr = Buffer.from([0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x41, 0x57, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00]);
+            const jsonBuffer = Buffer.from(JSON.stringify(json), "utf8");
+            const exif = Buffer.concat([exifAttr, jsonBuffer]);
+            exif.writeUIntLE(jsonBuffer.length, 14, 4);
+
+            img.exif = exif;
+            const finalBuffer = await img.save(null);
+
+            // إرسال الملصق
+            await sock.sendMessage(chatId, {
+                sticker: finalBuffer,
+                contextInfo: {
+                    forwardingScore: 999,
+                    isForwarded: true,
+                    externalAdReply: {
+                        title: process.env.EXTERNAL_AD_TITLE || "🤖 Zaky AI 🤖",
+                        body: process.env.EXTERNAL_AD_BODY || "للمساعدة أو الاستفسارات",
+                        mediaType: Number(process.env.EXTERNAL_AD_MEDIA_TYPE) || 2,
+                        thumbnail: fs.readFileSync(path.join(process.cwd(), process.env.EXTERNAL_AD_THUMBNAIL_PATH || "./assets/zakyai.jpg")),
+                        mediaUrl: process.env.EXTERNAL_AD_MEDIA_URL || "https://wa.me/201280779419",
+                        sourceUrl: process.env.EXTERNAL_AD_SOURCE_URL || "https://wa.me/201280779419"
+                    }
                 }
-                resolve();
             });
-        });
-    }
-
-    // إذا لم يتم إنشاء الملف بنجاح، نرسل رسالة خطأ ونخرج
-    if (!fs.existsSync(tempOutput)) {
-        await sendErrorMessage(sock, chatId, "❌ حدث خطأ أثناء معالجة الملصق. يرجى المحاولة مرة أخرى.");
-        if (fs.existsSync(tempInput)) fs.unlinkSync(tempInput);
-        return;
-    }
-
-    // إضافة معلومات الملصق (EXIF)
-    try {
-        const webpBuffer = fs.readFileSync(tempOutput);
-        const img = new webp.Image();
-        await img.load(webpBuffer);
-
-        const json = {
-            "sticker-pack-id": crypto.randomBytes(32).toString("hex"),
-            "sticker-pack-name": packInfo.packName,
-            "sticker-pack-publisher": packInfo.packPublisher,
-            "emojis": (process.env.STICKER_EMOJIS || "🇪🇬,😎,😂").split(",")
-        };
-
-        const exifAttr = Buffer.from([0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x41, 0x57, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00]);
-        const jsonBuffer = Buffer.from(JSON.stringify(json), "utf8");
-        const exif = Buffer.concat([exifAttr, jsonBuffer]);
-        exif.writeUIntLE(jsonBuffer.length, 14, 4);
-
-        img.exif = exif;
-        const finalBuffer = await img.save(null);
-
-        // إرسال الملصق
-        await sock.sendMessage(chatId, {
-            sticker: finalBuffer,
-            contextInfo: {
-                forwardingScore: 999,
-                isForwarded: true,
-                externalAdReply: {
-                    title: process.env.EXTERNAL_AD_TITLE || "🤖 Zaky AI 🤖",
-                    body: process.env.EXTERNAL_AD_BODY || "للمساعدة أو الاستفسارات",
-                    mediaType: Number(process.env.EXTERNAL_AD_MEDIA_TYPE) || 2,
-                    thumbnail: fs.readFileSync(path.join(process.cwd(), process.env.EXTERNAL_AD_THUMBNAIL_PATH || "./assets/zakyai.jpg")),
-                    mediaUrl: process.env.EXTERNAL_AD_MEDIA_URL || "https://wa.me/201280779419",
-                    sourceUrl: process.env.EXTERNAL_AD_SOURCE_URL || "https://wa.me/201280779419"
-                }
-            }
-        });
+        } catch (error) {
+            console.error("❌ خطأ في إضافة معلومات EXIF:", error);
+            // إذا فشل إضافة معلومات EXIF، نرسل الملصق بدون معلومات
+            await sock.sendMessage(chatId, {
+                sticker: fs.readFileSync(tempOutput)
+            });
+        }
     } catch (error) {
-        console.error("❌ خطأ في إضافة معلومات EXIF:", error);
-        // إذا فشل إضافة معلومات EXIF، نرسل الملصق بدون معلومات
-        await sock.sendMessage(chatId, {
-            sticker: fs.readFileSync(tempOutput)
-        });
+        console.error("❌ خطأ في إنشاء الملصق:", error);
+        await sendErrorMessage(sock, chatId, "❌ معلش، حصل مشكلة وأنا بعمل الملصق 😔 جرب تاني بعد شوية 🙏");
+    } finally {
+        // تنظيف الملفات المؤقتة
+        if (fs.existsSync(tempInput)) fs.unlinkSync(tempInput);
+        if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
     }
-
-    // تنظيف الملفات المؤقتة
-    if (fs.existsSync(tempInput)) fs.unlinkSync(tempInput);
-    if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
 };
 
 const handleStickerCommands = async (sock, chatId, message, sender) => {
@@ -375,6 +450,10 @@ const handleStickerCommands = async (sock, chatId, message, sender) => {
             command = message.message.conversation.split(" ")[0].toLowerCase();
         } else if (message.message?.extendedTextMessage?.text) {
             command = message.message.extendedTextMessage.text.split(" ")[0].toLowerCase();
+        } else if (message.message?.imageMessage?.caption) {
+            command = message.message.imageMessage.caption.split(" ")[0].toLowerCase();
+        } else if (message.message?.videoMessage?.caption) {
+            command = message.message.videoMessage.caption.split(" ")[0].toLowerCase();
         }
 
         switch (command) {
