@@ -68,7 +68,7 @@ const takeCommand = async (sock, chatId, message, sender) => {
 
         // استخراج الاسم والرقم من النص
         let msgText = '';
-        
+
         if (message.message?.conversation) {
             msgText = message.message.conversation;
         } else if (message.message?.extendedTextMessage?.text) {
@@ -78,18 +78,18 @@ const takeCommand = async (sock, chatId, message, sender) => {
         } else if (message.message?.videoMessage?.caption) {
             msgText = message.message.videoMessage.caption;
         }
-        
+
         console.log(`استلمت رسالة: "${msgText}"`); // سجل للتصحيح
-        
+
         // التحقق من وجود معلومات إضافية بعد .take
         const takeRegex = /^\.take\s+(.+)$/i;
         if (takeRegex.test(msgText)) {
             const params = msgText.replace(takeRegex, '$1').trim();
             console.log(`معلومات بعد .take: "${params}"`); // سجل للتصحيح
-            
+
             // البحث عن رقم هاتف في النص (افتراض أنه على الأقل 10 أرقام)
             const phoneMatch = params.match(/(\d{10,})/);
-            
+
             if (phoneMatch) {
                 customNumber = phoneMatch[1];
                 // استخراج الاسم بعد إزالة الرقم
@@ -105,15 +105,15 @@ const takeCommand = async (sock, chatId, message, sender) => {
         // التعامل مع الصورة التي تحتوي على كابشن
         if (message.message?.imageMessage && message.message?.imageMessage?.caption?.startsWith('.take')) {
             mediaMessage = message.message.imageMessage;
-            
+
             // استخراج المعلومات من الكابشن
             const caption = message.message.imageMessage.caption;
             const captionParams = caption.replace(/^\.take\s+/, '').trim();
-            
+
             if (captionParams) {
                 // البحث عن رقم هاتف في النص
                 const phoneMatch = captionParams.match(/(\d{10,})/);
-                
+
                 if (phoneMatch) {
                     customNumber = phoneMatch[1];
                     // استخراج الاسم بعد إزالة الرقم
@@ -126,15 +126,15 @@ const takeCommand = async (sock, chatId, message, sender) => {
         // التعامل مع الفيديو الذي يحتوي على كابشن
         else if (message.message?.videoMessage && message.message?.videoMessage?.caption?.startsWith('.take')) {
             mediaMessage = message.message.videoMessage;
-            
+
             // استخراج المعلومات من الكابشن
             const caption = message.message.videoMessage.caption;
             const captionParams = caption.replace(/^\.take\s+/, '').trim();
-            
+
             if (captionParams) {
                 // البحث عن رقم هاتف في النص
                 const phoneMatch = captionParams.match(/(\d{10,})/);
-                
+
                 if (phoneMatch) {
                     customNumber = phoneMatch[1];
                     // استخراج الاسم بعد إزالة الرقم
@@ -147,14 +147,14 @@ const takeCommand = async (sock, chatId, message, sender) => {
         // التحقق مما إذا كانت الرسالة رداً على رسالة أخرى
         else if (currentMessage.message?.extendedTextMessage?.contextInfo?.quotedMessage) {
             const quotedMessage = currentMessage.message.extendedTextMessage.contextInfo.quotedMessage;
-            mediaMessage = quotedMessage.imageMessage || 
-                         quotedMessage.videoMessage || 
-                         quotedMessage.documentMessage || 
+            mediaMessage = quotedMessage.imageMessage ||
+                         quotedMessage.videoMessage ||
+                         quotedMessage.documentMessage ||
                          quotedMessage.stickerMessage; // إضافة دعم للملصقات
             currentMessage = { message: quotedMessage };
         } else {
-            mediaMessage = currentMessage.message?.imageMessage || 
-                         currentMessage.message?.videoMessage || 
+            mediaMessage = currentMessage.message?.imageMessage ||
+                         currentMessage.message?.videoMessage ||
                          currentMessage.message?.documentMessage ||
                          currentMessage.message?.stickerMessage; // إضافة دعم للملصقات
         }
@@ -175,7 +175,7 @@ const takeCommand = async (sock, chatId, message, sender) => {
         }
 
         let packInfo;
-        
+
         if (usedDefaultSenderInfo) {
             // إذا استخدم الأمر .take فقط - استخدم معلومات المرسل
             const senderName = sender.name || sender.pushName || "مستخدم";
@@ -238,52 +238,133 @@ const createAndSendSticker = async (sock, chatId, mediaBuffer, mediaMessage, pac
 
     fs.writeFileSync(tempInput, mediaBuffer);
 
-    const isAnimated = mediaMessage.mimetype?.includes("gif") || mediaMessage.seconds > 0;
-    const ffmpegCommand = isAnimated
-        ? `ffmpeg -i "${tempInput}" -vf "scale=${process.env.STICKER_SCALE}:${process.env.STICKER_SCALE}:force_original_aspect_ratio=decrease,fps=${process.env.STICKER_FPS},pad=${process.env.STICKER_SCALE}:${process.env.STICKER_SCALE}:(ow-iw)/2:(oh-ih)/2:color=#00000000" -c:v libwebp -preset default -loop 0 -vsync 0 -pix_fmt yuva420p -quality ${process.env.STICKER_QUALITY} -compression_level ${process.env.STICKER_COMPRESSION_LEVEL} "${tempOutput}"`
-        : `ffmpeg -i "${tempInput}" -vf "scale=${process.env.STICKER_SCALE}:${process.env.STICKER_SCALE}:force_original_aspect_ratio=decrease,format=rgba,pad=${process.env.STICKER_SCALE}:${process.env.STICKER_SCALE}:(ow-iw)/2:(oh-ih)/2:color=#00000000" -c:v libwebp -preset default -loop 0 -vsync 0 -pix_fmt yuva420p -quality ${process.env.STICKER_QUALITY} -compression_level ${process.env.STICKER_COMPRESSION_LEVEL} "${tempOutput}"`;
+    // تحديد ما إذا كان الملف متحرك (GIF أو فيديو أو ستيكر متحرك)
+    const isAnimated = mediaMessage.mimetype?.includes("gif") || 
+                       mediaMessage.seconds > 0 || 
+                       mediaMessage.mimetype?.includes("webp") && 
+                       (mediaMessage.isAnimated || mediaBuffer.toString().includes("ANIM") || mediaBuffer.toString().includes("ANMF"));
 
-    await new Promise((resolve, reject) => {
-        exec(ffmpegCommand, (error) => (error ? reject(error) : resolve()));
-    });
-
-    const webpBuffer = fs.readFileSync(tempOutput);
-    const img = new webp.Image();
-    await img.load(webpBuffer);
-
-    const json = {
-        "sticker-pack-id": crypto.randomBytes(32).toString("hex"),
-        "sticker-pack-name": packInfo.packName,
-        "sticker-pack-publisher": packInfo.packPublisher,
-        "emojis": (process.env.STICKER_EMOJIS || "🇪🇬,😎,😂").split(",")
-    };
-
-    const exifAttr = Buffer.from([0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x41, 0x57, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00]);
-    const jsonBuffer = Buffer.from(JSON.stringify(json), "utf8");
-    const exif = Buffer.concat([exifAttr, jsonBuffer]);
-    exif.writeUIntLE(jsonBuffer.length, 14, 4);
-
-    img.exif = exif;
-    const finalBuffer = await img.save(null);
-
-    await sock.sendMessage(chatId, {
-        sticker: finalBuffer,
-        contextInfo: {
-            forwardingScore: 999,
-            isForwarded: true,
-            externalAdReply: {
-                title: process.env.EXTERNAL_AD_TITLE || "🤖 Zaky AI 🤖",
-                body: process.env.EXTERNAL_AD_BODY || "للمساعدة أو الاستفسارات",
-                mediaType: Number(process.env.EXTERNAL_AD_MEDIA_TYPE) || 2,
-                thumbnail: fs.readFileSync(path.join(process.cwd(), process.env.EXTERNAL_AD_THUMBNAIL_PATH || "./assets/zakyai.jpg")),
-                mediaUrl: process.env.EXTERNAL_AD_MEDIA_URL || "https://wa.me/201280779419",
-                sourceUrl: process.env.EXTERNAL_AD_SOURCE_URL || "https://wa.me/201280779419"
+    // التعامل مع الملفات المتحركة
+    let ffmpegCommand;
+    
+    if (isAnimated) {
+        // معالجة الستيكر المتحرك بأمر مختلف
+        if (mediaMessage.mimetype?.includes("webp") && (mediaBuffer.toString().includes("ANIM") || mediaBuffer.toString().includes("ANMF"))) {
+            // أولاً نحول الملف المتحرك إلى GIF ثم نحوله مرة أخرى إلى WebP
+            const tempGif = path.join(tmpDir, `temp_gif_${Date.now()}.gif`);
+            
+            // تحويل WebP المتحرك إلى GIF
+            await new Promise((resolve, reject) => {
+                exec(`ffmpeg -i "${tempInput}" -vf "scale=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:force_original_aspect_ratio=decrease" "${tempGif}"`, (error) => {
+                    if (error) {
+                        console.error("خطأ في تحويل WebP إلى GIF:", error);
+                        return reject(error);
+                    }
+                    resolve();
+                });
+            });
+            
+            // تحويل GIF إلى WebP مرة أخرى مع الإعدادات المناسبة
+            ffmpegCommand = `ffmpeg -i "${tempGif}" -vf "scale=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:force_original_aspect_ratio=decrease,fps=${process.env.STICKER_FPS || 15},pad=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:(ow-iw)/2:(oh-ih)/2:color=#00000000" -c:v libwebp -lossless 0 -compression_level ${process.env.STICKER_COMPRESSION_LEVEL || 6} -q:v ${process.env.STICKER_QUALITY || 50} -loop 0 -preset picture -an -vsync 0 "${tempOutput}"`;
+            
+            await new Promise((resolve, reject) => {
+                exec(ffmpegCommand, (error) => {
+                    if (error) {
+                        console.error("خطأ في تحويل GIF إلى WebP:", error);
+                        return reject(error);
+                    }
+                    resolve();
+                });
+            });
+            
+            // حذف ملف GIF المؤقت
+            if (fs.existsSync(tempGif)) {
+                fs.unlinkSync(tempGif);
             }
+        } else {
+            // معالجة فيديو أو GIF
+            ffmpegCommand = `ffmpeg -i "${tempInput}" -vf "scale=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:force_original_aspect_ratio=decrease,fps=${process.env.STICKER_FPS || 15},pad=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:(ow-iw)/2:(oh-ih)/2:color=#00000000" -c:v libwebp -lossless 0 -compression_level ${process.env.STICKER_COMPRESSION_LEVEL || 6} -q:v ${process.env.STICKER_QUALITY || 50} -loop 0 -preset picture -an -vsync 0 "${tempOutput}"`;
+            
+            await new Promise((resolve, reject) => {
+                exec(ffmpegCommand, (error) => {
+                    if (error) {
+                        console.error("خطأ في تحويل فيديو/GIF إلى WebP:", error);
+                        return reject(error);
+                    }
+                    resolve();
+                });
+            });
         }
-    });
+    } else {
+        // معالجة الصور الثابتة
+        ffmpegCommand = `ffmpeg -i "${tempInput}" -vf "scale=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:force_original_aspect_ratio=decrease,format=rgba,pad=${process.env.STICKER_SCALE || 512}:${process.env.STICKER_SCALE || 512}:(ow-iw)/2:(oh-ih)/2:color=#00000000" -c:v libwebp -preset default -loop 0 -q:v ${process.env.STICKER_QUALITY || 50} -compression_level ${process.env.STICKER_COMPRESSION_LEVEL || 6} "${tempOutput}"`;
+        
+        await new Promise((resolve, reject) => {
+            exec(ffmpegCommand, (error) => {
+                if (error) {
+                    console.error("خطأ في تحويل الصورة إلى WebP:", error);
+                    return reject(error);
+                }
+                resolve();
+            });
+        });
+    }
 
-    fs.unlinkSync(tempInput);
-    fs.unlinkSync(tempOutput);
+    // إذا لم يتم إنشاء الملف بنجاح، نرسل رسالة خطأ ونخرج
+    if (!fs.existsSync(tempOutput)) {
+        await sendErrorMessage(sock, chatId, "❌ حدث خطأ أثناء معالجة الملصق. يرجى المحاولة مرة أخرى.");
+        if (fs.existsSync(tempInput)) fs.unlinkSync(tempInput);
+        return;
+    }
+
+    // إضافة معلومات الملصق (EXIF)
+    try {
+        const webpBuffer = fs.readFileSync(tempOutput);
+        const img = new webp.Image();
+        await img.load(webpBuffer);
+
+        const json = {
+            "sticker-pack-id": crypto.randomBytes(32).toString("hex"),
+            "sticker-pack-name": packInfo.packName,
+            "sticker-pack-publisher": packInfo.packPublisher,
+            "emojis": (process.env.STICKER_EMOJIS || "🇪🇬,😎,😂").split(",")
+        };
+
+        const exifAttr = Buffer.from([0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x41, 0x57, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00]);
+        const jsonBuffer = Buffer.from(JSON.stringify(json), "utf8");
+        const exif = Buffer.concat([exifAttr, jsonBuffer]);
+        exif.writeUIntLE(jsonBuffer.length, 14, 4);
+
+        img.exif = exif;
+        const finalBuffer = await img.save(null);
+
+        // إرسال الملصق
+        await sock.sendMessage(chatId, {
+            sticker: finalBuffer,
+            contextInfo: {
+                forwardingScore: 999,
+                isForwarded: true,
+                externalAdReply: {
+                    title: process.env.EXTERNAL_AD_TITLE || "🤖 Zaky AI 🤖",
+                    body: process.env.EXTERNAL_AD_BODY || "للمساعدة أو الاستفسارات",
+                    mediaType: Number(process.env.EXTERNAL_AD_MEDIA_TYPE) || 2,
+                    thumbnail: fs.readFileSync(path.join(process.cwd(), process.env.EXTERNAL_AD_THUMBNAIL_PATH || "./assets/zakyai.jpg")),
+                    mediaUrl: process.env.EXTERNAL_AD_MEDIA_URL || "https://wa.me/201280779419",
+                    sourceUrl: process.env.EXTERNAL_AD_SOURCE_URL || "https://wa.me/201280779419"
+                }
+            }
+        });
+    } catch (error) {
+        console.error("❌ خطأ في إضافة معلومات EXIF:", error);
+        // إذا فشل إضافة معلومات EXIF، نرسل الملصق بدون معلومات
+        await sock.sendMessage(chatId, {
+            sticker: fs.readFileSync(tempOutput)
+        });
+    }
+
+    // تنظيف الملفات المؤقتة
+    if (fs.existsSync(tempInput)) fs.unlinkSync(tempInput);
+    if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput);
 };
 
 const handleStickerCommands = async (sock, chatId, message, sender) => {
