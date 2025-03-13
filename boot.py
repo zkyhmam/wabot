@@ -1,12 +1,12 @@
 import asyncio
 from playwright.async_api import async_playwright
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-# توكن البوت
+# توكن البوت (استبدله بتوكنك الخاص إذا لزم الأمر)
 TOKEN = "7558529929:AAFmMHm2HuqHsdqdQvl_ZLCoXn5XOPiRzfw"
 
-# قائمة المواقع
+# قائمة المواقع مع روابط البحث والمحددات
 SITES = {
     "EgyDead": {
         "url": "https://egydead.space/",
@@ -30,10 +30,14 @@ SITES = {
     }
 }
 
+# معالجة أمر /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """إرسال رسالة ترحيب عند بدء البوت."""
     await update.message.reply_text("مرحبًا! اكتب اسم فيلم للبحث عنه.")
 
+# معالجة استعلامات البحث
 async def search_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """البحث عن الأفلام بناءً على الاستعلام."""
     query = update.message.text
     msg = await update.message.reply_text(f"جاري البحث عن: {query}...")
     
@@ -43,22 +47,32 @@ async def search_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await msg.edit_text("لم يتم العثور على نتائج.")
         return
     
+    # إنشاء أزرار للنتائج
     keyboard = [[InlineKeyboardButton(f"{r['site']}: {r['title']}", callback_data=f"movie_{i}")] 
                 for i, r in enumerate(results[:10])]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # تخزين النتائج في سياق المحادثة
     context.user_data["search_results"] = results
     await msg.edit_text("نتائج البحث:", reply_markup=reply_markup)
 
+# معالجة النقر على الأزرار
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """التعامل مع اختيار المستخدم من النتائج."""
     query = update.callback_query
     await query.answer()
-    index = int(query.data.split("_")[1])
-    results = context.user_data.get("search_results", [])
-    if 0 <= index < len(results):
-        result = results[index]
-        await query.message.edit_text(f"تم اختيار: {result['title']} من {result['site']}\nرابط: {result['link']}")
+    
+    if query.data.startswith("movie_"):
+        index = int(query.data.split("_")[1])
+        results = context.user_data.get("search_results", [])
+        
+        if 0 <= index < len(results):
+            result = results[index]
+            await query.edit_message_text(f"تم اختيار: {result['title']} من {result['site']}\nرابط: {result['link']}")
 
+# دالة البحث في المواقع باستخدام Playwright
 async def scrape_sites(query):
+    """استخراج نتائج البحث من المواقع."""
     results = []
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -70,6 +84,7 @@ async def scrape_sites(query):
             try:
                 page = await context.new_page()
                 search_url = site_info['search_url'].format(query=query)
+                print(f"جاري البحث في {site_name}: {search_url}")
                 await page.goto(search_url, timeout=60000)
                 await page.wait_for_load_state("networkidle")
                 
@@ -88,11 +103,17 @@ async def scrape_sites(query):
         await browser.close()
     return results
 
-def main():
+# تشغيل البوت
+def main() -> None:
+    """الدالة الرئيسية لتشغيل البوت."""
     app = Application.builder().token(TOKEN).build()
+    
+    # إضافة معالجات الأوامر والرسائل
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movies))
     app.add_handler(CallbackQueryHandler(button_callback))
+    
+    # بدء البوت
     app.run_polling()
 
 if __name__ == "__main__":
