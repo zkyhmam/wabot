@@ -1,119 +1,166 @@
+import os
+import logging
+from urllib.parse import urljoin
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 import asyncio
-from playwright.async_api import async_playwright
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-# توكن البوت (استبدله بتوكنك الخاص إذا لزم الأمر)
-TOKEN = "7558529929:AAFmMHm2HuqHsdqdQvl_ZLCoXn5XOPiRzfw"
+# إعداد التسجيل
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# قائمة المواقع مع روابط البحث والمحددات
-SITES = {
+TOKEN = "7558529929:AAFmMHm2HuqHsdqdQvl_ZLCoXn5XOPiRzfw"  # تأكد من صحة التوكن
+
+MOVIE_SITES = {
     "EgyDead": {
-        "url": "https://egydead.space/",
-        "search_url": "https://egydead.space/search?s={query}",
-        "selectors": {"results": "article.post", "title": "h2.title a", "link": "h2.title a"}
+        "search_url": "https://egydead.space/search?s={}",
+        "base_url": "https://egydead.space",
+        "selectors": {
+            "items": ".movie-item",
+            "title": "h2 a",
+            "link": "h2 a"
+        }
     },
     "WitAnime": {
-        "url": "https://witanime.com/",
-        "search_url": "https://witanime.com/?search_param=animes&s={query}",
-        "selectors": {"results": "div.anime-card-container", "title": "h3", "link": "a"}
-    },
-    "FilmDoo": {
-        "url": "https://www.filmdoo.com/",
-        "search_url": "https://www.filmdoo.com/search?query={query}",
-        "selectors": {"results": "div.film-card", "title": "h3", "link": "a"}
-    },
-    "EgyBest": {
-        "url": "https://i-egybest.com/",
-        "search_url": "https://i-egybest.com/search?s={query}",
-        "selectors": {"results": "div.movie", "title": "h2 a", "link": "h2 a"}
+        "search_url": "https://witanime.com/?search_param=animes&s={}",
+        "base_url": "https://witanime.com",
+        "selectors": {
+            "items": ".anime-card",
+            "title": ".anime-title",
+            "link": "a"
+        }
     }
 }
 
-# معالجة أمر /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """إرسال رسالة ترحيب عند بدء البوت."""
-    await update.message.reply_text("مرحبًا! اكتب اسم فيلم للبحث عنه.")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text('مرحبًا! أرسل اسم فيلم أو مسلسل للبحث عنه.')
 
-# معالجة استعلامات البحث
-async def search_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """البحث عن الأفلام بناءً على الاستعلام."""
+async def search_site(page, site, query):
+    results = []
+    site_config = MOVIE_SITES[site]
+    try:
+        url = site_config["search_url"].format(query)
+        await page.goto(url, wait_until="networkidle", timeout=20000)
+        
+        # انتظار تحميل العناصر
+        await page.wait_for_selector(site_config["selectors"]["items"], timeout=10000)
+        
+        items = await page.query_selector_all(site_config["selectors"]["items"])
+        
+        for item in items:
+            try:
+                title_element = await item.query_selector(site_config["selectors"]["title"])
+                link_element = await item.query_selector(site_config["selectors"]["link"])
+                
+                title = await title_element.inner_text()
+                link = await link_element.get_attribute("href")
+                
+                if not link.startswith("http"):
+                    link = urljoin(site_config["base_url"], link)
+                
+                results.append({
+                    "title": title.strip(),
+                    "link": link,
+                    "source": site
+                })
+            except Exception as e:
+                logger.error(f"Error processing item: {str(e)}")
+                
+    except Exception as e:
+        logger.error(f"Error searching {site}: {str(e)}")
+    
+    return results
+
+async def search_all_sites(query):
+    all_results = []
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        for site in MOVIE_SITES:
+            try:
+                page = await browser.new_page()
+                results = await search_site(page, site, query)
+                all_results.extend(results)
+            finally:
+                await page.close()
+        await browser.close()
+    return all_results
+
+async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text
-    msg = await update.message.reply_text(f"جاري البحث عن: {query}...")
+    msg = await update.message.reply_text("🔍 جاري البحث...")
     
-    results = await scrape_sites(query)
-    
-    if not results:
-        await msg.edit_text("لم يتم العثور على نتائج.")
-        return
-    
-    # إنشاء أزرار للنتائج
-    keyboard = [[InlineKeyboardButton(f"{r['site']}: {r['title']}", callback_data=f"movie_{i}")] 
-                for i, r in enumerate(results[:10])]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    # تخزين النتائج في سياق المحادثة
-    context.user_data["search_results"] = results
-    await msg.edit_text("نتائج البحث:", reply_markup=reply_markup)
+    try:
+        results = await search_all_sites(query)
+        if not results:
+            return await msg.edit_text("⚠️ لم يتم العثور على نتائج")
+        
+        # إنشاء أزرار النتائج
+        buttons = [
+            [InlineKeyboardButton(
+                f"{res['title']} ({res['source']})", 
+                callback_data=f"result_{i}"
+            )]
+            for i, res in enumerate(results[:8])
+        ]
+        
+        await msg.edit_text(
+            f"🎬 نتائج البحث ({len(results)}):",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        context.user_data["results"] = results
+        
+    except Exception as e:
+        logger.error(f"Search error: {str(e)}")
+        await msg.edit_text("❌ حدث خطأ أثناء البحث")
 
-# معالجة النقر على الأزرار
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """التعامل مع اختيار المستخدم من النتائج."""
+async def handle_result_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    if query.data.startswith("movie_"):
-        index = int(query.data.split("_")[1])
-        results = context.user_data.get("search_results", [])
+    data = query.data
+    if data.startswith("result_"):
+        index = int(data.split("_")[1])
+        results = context.user_data.get("results", [])
         
         if 0 <= index < len(results):
-            result = results[index]
-            await query.edit_message_text(f"تم اختيار: {result['title']} من {result['site']}\nرابط: {result['link']}")
-
-# دالة البحث في المواقع باستخدام Playwright
-async def scrape_sites(query):
-    """استخراج نتائج البحث من المواقع."""
-    results = []
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        )
-        
-        for site_name, site_info in SITES.items():
+            selected = results[index]
+            await query.edit_message_text(f"⏳ جاري جلب التفاصيل لـ {selected['title']}...")
+            
             try:
-                page = await context.new_page()
-                search_url = site_info['search_url'].format(query=query)
-                print(f"جاري البحث في {site_name}: {search_url}")
-                await page.goto(search_url, timeout=60000)
-                await page.wait_for_load_state("networkidle")
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch()
+                    page = await browser.new_page()
+                    await page.goto(selected["link"], wait_until="networkidle")
+                    
+                    # استخراج محتوى الفيديو حسب الموقع
+                    if selected["source"] == "EgyDead":
+                        iframe = await page.query_selector("iframe")
+                        video_url = await iframe.get_attribute("src") if iframe else None
+                    elif selected["source"] == "WitAnime":
+                        video_element = await page.query_selector("video source")
+                        video_url = await video_element.get_attribute("src") if video_element else None
+                    
+                    await browser.close()
                 
-                elements = await page.query_selector_all(site_info['selectors']['results'])
-                for element in elements:
-                    title_elem = await element.query_selector(site_info['selectors']['title'])
-                    link_elem = await element.query_selector(site_info['selectors']['link'])
-                    title = await title_elem.inner_text() if title_elem else "بدون عنوان"
-                    link = await link_elem.get_attribute('href') if link_elem else None
-                    if link and not link.startswith('http'):
-                        link = site_info['url'].rstrip('/') + '/' + link.lstrip('/')
-                    results.append({"site": site_name, "title": title, "link": link})
-                await page.close()
+                if video_url:
+                    await query.message.reply_video(video_url, caption=selected["title"])
+                else:
+                    await query.message.reply_text("⚠️ لم يتم العثور على رابط التشغيل")
             except Exception as e:
-                print(f"خطأ في {site_name}: {e}")
-        await browser.close()
-    return results
+                logger.error(f"Playback error: {str(e)}")
+                await query.message.reply_text("❌ حدث خطأ أثناء جلب المحتوى")
 
-# تشغيل البوت
-def main() -> None:
-    """الدالة الرئيسية لتشغيل البوت."""
-    app = Application.builder().token(TOKEN).build()
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
     
-    # إضافة معالجات الأوامر والرسائل
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movies))
-    app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search))
+    app.add_handler(CallbackQueryHandler(handle_result_selection))
     
-    # بدء البوت
     app.run_polling()
 
 if __name__ == "__main__":
