@@ -9,7 +9,7 @@ const ELEVENLABS_API_KEYS = [
     "sk_b4ed7661588f2551e6870754e2906db60ab0ebd269acd3f5",
     "sk_1589e85d0d905c2eee47597fa4fa15870c439331c4744631"
 ];
-const VOICE_IDS = ["IES4nrmZdUBHByLBde0P", "LXrTqFIgiubkrMkwvOUr"]; // حط الصوتين هنا
+const VOICE_IDS = ["IES4nrmZdUBHByLBde0P", "LXrTqFIgiubkrMkwvOUr", "l0T2byRqtZoo4gvAGuNf", "wJqPPQ618aTW29mptyoc", "tavIIPLplRB883FzWU0V"];
 const DAILY_REQUEST_LIMIT = 5;
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const ASSETS_DIR = path.join(__dirname, '..', 'assets');
