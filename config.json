@@ -1,0 +1,35 @@
+{
+    "admin_id": 6988696258,
+    "admin_username": "Zaky1million",
+    "allowed_groups": [
+        {
+            "id": 2489381079,
+            "title": "طلبات افلام",
+            "link": "https://t.me/talabataflam"
+        },
+        {
+            "id": 4611026787,
+            "title": "J",
+            "link": "https://t.me/+jaupzQsOdzVmY2Y0"
+        }
+    ],
+    "monitored_channels": [
+        {
+            "id": 2210077827,
+            "username": "Mix1Movies",
+            "title": "MBC 2",
+            "link": "https://t.me/Mix1Movies"
+        },
+        {
+            "id": 2026172929,
+            "username": "cartondisney1",
+            "title": "افلام مسلسلات كرتون ديزني بالمصري",
+            "link": "https://t.me/cartondisney1"
+        }
+    ],
+    "search_lines_limit": 2,
+    "search_full_message": false,
+    "monitored_shares": [],
+    "archive_channel_id": 2572891863,
+    "request_group_link": "https://t.me/talabataflam"
+}
